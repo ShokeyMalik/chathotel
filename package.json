@@ -1,28 +1,24 @@
 {
   "name": "chathotel",
-  "version": "1.0.0-dev",
-  "description": "WhatsApp-native hotel management SaaS platform",
-  "private": true,
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
+  "version": "1.0.0",
+  "description": "Multi-tenant WhatsApp Hotel Management SaaS",
+  "main": "packages/mcp-servers/dist/hotel-management.js",
   "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "test": "turbo run test",
-    "lint": "turbo run lint",
-    "type-check": "turbo run type-check"
+    "start": "node packages/mcp-servers/dist/hotel-management.js",
+    "start:hotel": "node packages/mcp-servers/dist/hotel-management.js",
+    "start:whatsapp": "node packages/mcp-servers/dist/whatsapp.js",
+    "start:staff": "node packages/mcp-servers/dist/staff-management.js",
+    "install-deps": "cd packages/mcp-servers && npm install && cd ../database/prisma && npm install"
   },
-  "devDependencies": {
-    "turbo": "^1.10.14",
-    "@types/node": "^20.8.0",
-    "typescript": "^5.2.2",
-    "eslint": "^8.50.0",
-    "prettier": "^3.0.3"
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@prisma/client": "^6.8.2",
+    "prisma": "^6.8.2",
+    "zod": "^3.23.8"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
-  }
+    "node": ">=18.0.0"
+  },
+  "author": "ShokeyMalik",
+  "license": "MIT"
 }
