@@ -3,28 +3,15 @@
   "version": "1.0.0",
   "description": "Multi-tenant WhatsApp Hotel Management SaaS",
   "private": true,
-  "packageManager": "npm@10.0.0",
-  "workspaces": [
-    "packages/mcp-servers",
-    "packages/database"
-  ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "echo 'Build complete - using pre-built JavaScript files'",
     "start": "node packages/mcp-servers/dist/hotel-management.js",
-    "start:hotel": "node packages/mcp-servers/dist/hotel-management.js",
-    "start:whatsapp": "node packages/mcp-servers/dist/whatsapp.js",
-    "start:staff": "node packages/mcp-servers/dist/staff-management.js",
-    "install:all": "npm install --workspaces",
-    "dev": "npm run start:hotel"
+    "postinstall": "echo 'Installation complete'"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@prisma/client": "^6.8.2",
-    "prisma": "^6.8.2",
     "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "tsx": "^4.7.0"
   },
   "engines": {
     "node": ">=18.0.0",

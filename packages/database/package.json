@@ -2,10 +2,10 @@
   "name": "@chathotel/database",
   "version": "1.0.0",
   "private": true,
-  "main": "prisma/seed.ts",
+  "main": "src/seed.ts",
   "scripts": {
     "build": "echo 'Database package - no build needed'",
-    "seed": "tsx prisma/src/seed.ts",
+    "seed": "tsx src/seed.ts",
     "migrate": "prisma migrate dev",
     "generate": "prisma generate",
     "studio": "prisma studio"
