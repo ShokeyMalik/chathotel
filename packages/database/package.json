@@ -1,24 +1,23 @@
 {
   "name": "@chathotel/database",
   "version": "1.0.0",
-  "description": "ChatHotel multi-tenant database schemas",
-  "main": "dist/index.js",
+  "private": true,
+  "main": "prisma/seed.ts",
   "scripts": {
-    "db:generate": "prisma generate",
-    "db:push": "prisma db push",
-    "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx src/seed.ts",
-    "dev": "tsx watch src/index.ts"
+    "build": "echo 'Database package - no build needed'",
+    "seed": "tsx prisma/src/seed.ts",
+    "migrate": "prisma migrate dev",
+    "generate": "prisma generate",
+    "studio": "prisma studio"
   },
   "dependencies": {
     "@prisma/client": "^6.8.2",
-    "bcrypt": "^5.1.1",
-    "uuid": "^9.0.1"
+    "prisma": "^6.8.2"
   },
   "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
-    "@types/uuid": "^9.0.7",
-    "prisma": "^6.8.2",
-    "tsx": "^3.14.0"
+    "tsx": "^4.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
