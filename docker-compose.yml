@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: chathotel-postgres
+    environment:
+      POSTGRES_DB: chathotel
+      POSTGRES_USER: chathotel
+      POSTGRES_PASSWORD: dev_password_123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - chathotel-network
+
+  # Redis for caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: chathotel-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chathotel-network
+
+  # pgAdmin for database management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: chathotel-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@chathotel.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+    networks:
+      - chathotel-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  chathotel-network:
+    driver: bridge
