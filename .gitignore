@@ -11,17 +11,15 @@ node_modules/
 
 # Logs
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
-# Build outputs
+# Build outputs (but keep MCP server dist files)
 dist/
-build/
+!packages/mcp-servers/dist/
+packages/mcp-servers/dist/*
+!packages/mcp-servers/dist/*.js
 
 # Prisma
 packages/database/prisma/migrations/
-.prisma/
 
 # OS
 .DS_Store
@@ -30,8 +28,3 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# Railway
-.railway/
