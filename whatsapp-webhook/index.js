@@ -1,32 +1,31 @@
 const express = require('express');
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-const VERIFY_TOKEN = "chathotelwhatsapp";
+// Webhook verification endpoint
+app.get('/', (req, res) => {
+  const VERIFY_TOKEN = "chathotelwhatsapp"; // You can set this to anything you want
 
-// Verification endpoint for Meta
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
   if (mode && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
-    return res.status(200).send(challenge);
+    console.log("WEBHOOK_VERIFIED");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-
-  console.error("❌ Verification failed");
-  res.status(403).send("Forbidden");
 });
 
-// To receive messages/events
-app.post('/webhook', (req, res) => {
-  console.log("📩 Received webhook event:", JSON.stringify(req.body, null, 2));
+// Webhook receiving messages
+app.post('/', (req, res) => {
+  console.log("📩 Webhook received:", JSON.stringify(req.body, null, 2));
   res.sendStatus(200);
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+app.listen(port, () => {
+  console.log(`✅ WhatsApp Webhook is running on port ${port}`);
 });
