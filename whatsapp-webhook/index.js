@@ -1,31 +1,69 @@
-const express = require('express');
+// whatsapp-webhook/index.js
+
+import express from 'express';
+import bodyParser from 'body-parser';
+import axios from 'axios';
+
+const VERIFY_TOKEN = 'chathotelwhatsapp';
+const MCP_SERVER_URL = 'https://chathotel-production.onrender.com'; // Change this to your MCP WhatsApp server's URL
+
 const app = express();
-const port = process.env.PORT || 3000;
+app.use(bodyParser.json());
 
-app.use(express.json());
+// webhook route to receive incoming WhatsApp messages
+app.post('/webhook', async (req, res) => {
+  console.log('📩 Received WhatsApp message:', req.body);
 
-// Webhook verification endpoint
+/**
+ * GET handler for webhook verification (required by Meta)
+ */
 app.get('/', (req, res) => {
-  const VERIFY_TOKEN = "chathotelwhatsapp"; // You can set this to anything you want
-
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
   if (mode && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK_VERIFIED");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    return res.status(200).send(challenge);
   }
+
+  return res.status(403).send('Verification failed');
 });
 
-// Webhook receiving messages
-app.post('/', (req, res) => {
-  console.log("📩 Webhook received:", JSON.stringify(req.body, null, 2));
+/**
+ * POST handler for WhatsApp messages
+ */
+app.post('/', async (req, res) => {
+  // Acknowledge to Meta quickly
   res.sendStatus(200);
-});
 
-app.listen(port, () => {
-  console.log(`✅ WhatsApp Webhook is running on port ${port}`);
+  const body = req.body;
+
+  if (body?.object === 'whatsapp_business_account') {
+    const entries = body.entry || [];
+
+    for (const entry of entries) {
+      const changes = entry.changes || [];
+      for (const change of changes) {
+        const messages = change.value?.messages || [];
+
+        for (const msg of messages) {
+          const payload = {
+            from: msg.from,
+            message: msg.text?.body || '',
+            type: msg.type,
+            timestamp: msg.timestamp,
+            phone_number_id: change.value.metadata?.phone_number_id
+          };
+
+          // Route to your MCP server (hotel-whatsapp)
+          try {
+            await axios.post(`${MCP_SERVER_URL}/webhook`, payload);
+            console.log('✅ Forwarded message to MCP:', payload);
+          } catch (err) {
+            console.error('❌ Failed to forward to MCP:', err.message);
+          }
+        }
+      }
+    }
+  }
 });
