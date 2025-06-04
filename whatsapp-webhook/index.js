@@ -5,7 +5,7 @@ import bodyParser from 'body-parser';
 import axios from 'axios';
 
 const VERIFY_TOKEN = 'chathotelwhatsapp';
-const MCP_SERVER_URL = 'https://chathotel-production.onrender.com'; // Change this to your MCP WhatsApp server's URL
+const MCP_SERVER_URL = 'https://chathotel-production.onrender.com/webhook'; // Change this to your MCP WhatsApp server's URL
 
 const app = express();
 app.use(bodyParser.json());
@@ -13,6 +13,8 @@ app.use(bodyParser.json());
 // webhook route to receive incoming WhatsApp messages
 app.post('/webhook', async (req, res) => {
   console.log('📩 Received WhatsApp message:', req.body);
+  res.sendStatus(200);
+});
 
 /**
  * GET handler for webhook verification (required by Meta)
