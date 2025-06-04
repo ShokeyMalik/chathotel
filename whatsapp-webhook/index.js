@@ -5,38 +5,17 @@ import bodyParser from 'body-parser';
 import axios from 'axios';
 
 const VERIFY_TOKEN = 'chathotelwhatsapp';
-const MCP_SERVER_URL = 'https://chathotel-production.onrender.com/webhook'; // Change this to your MCP WhatsApp server's URL
+const MCP_SERVER_URL = 'https://chathotel-production.onrender.com/webhook'; // Your MCP server endpoint
 
 const app = express();
 app.use(bodyParser.json());
 
-// webhook route to receive incoming WhatsApp messages
+/**
+ * POST: Handles WhatsApp webhook messages from Meta
+ */
 app.post('/webhook', async (req, res) => {
   console.log('📩 Received WhatsApp message:', req.body);
-  res.sendStatus(200);
-});
-
-/**
- * GET handler for webhook verification (required by Meta)
- */
-app.get('/', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-
-  return res.status(403).send('Verification failed');
-});
-
-/**
- * POST handler for WhatsApp messages
- */
-app.post('/', async (req, res) => {
-  // Acknowledge to Meta quickly
-  res.sendStatus(200);
+  res.sendStatus(200); // Acknowledge quickly to Meta
 
   const body = req.body;
 
@@ -57,7 +36,6 @@ app.post('/', async (req, res) => {
             phone_number_id: change.value.metadata?.phone_number_id
           };
 
-          // Route to your MCP server (hotel-whatsapp)
           try {
             await axios.post(`${MCP_SERVER_URL}/webhook`, payload);
             console.log('✅ Forwarded message to MCP:', payload);
@@ -68,4 +46,25 @@ app.post('/', async (req, res) => {
       }
     }
   }
+});
+
+/**
+ * GET: Webhook verification for Meta (GET request with token + challenge)
+ */
+app.get('/', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token === VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
+
+  return res.status(403).send('Verification failed');
+});
+
+// ✅ Critical for Render – Listen on 0.0.0.0
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 WhatsApp Webhook server running on port ${PORT}`);
 });
