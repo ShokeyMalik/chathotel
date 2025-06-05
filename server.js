@@ -1,4 +1,3 @@
-// ChatHotel Server - Session Mode (Works without database)
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -9,24 +8,21 @@ const PORT = process.env.PORT || 3000;
 // WhatsApp Configuration
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const WHATSAPP_BUSINESS_ACCOUNT_ID = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
 const WHATSAPP_WEBHOOK_VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'chathotelwhatsapp';
 
 // Claude API Configuration
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
-// Session storage (memory-based, works without database)
-const sessionStorage = {
-    guests: new Map(),
-    conversations: new Map(),
-    bookings: new Map()
-};
+// Enhanced session storage
+const guestSessions = new Map();
+const conversationHistory = new Map();
 
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+// CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
@@ -38,138 +34,157 @@ app.use((req, res, next) => {
     }
 });
 
-// Session-based guest management
-function findOrCreateGuestSession(phoneNumber, name = null) {
-    console.log('🔍 Looking up guest in session:', phoneNumber);
+// Enhanced guest session management
+function createOrUpdateGuestSession(phoneNumber, name = null) {
+    console.log('👤 Managing guest session:', phoneNumber);
     
-    let guest = sessionStorage.guests.get(phoneNumber);
+    let guest = guestSessions.get(phoneNumber);
+    
     if (!guest) {
         guest = {
             id: `guest_${Date.now()}`,
             phone: phoneNumber,
             name: name || `Guest ${phoneNumber.slice(-4)}`,
-            email: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            bookings: [],
-            preferences: {},
-            totalSpent: 0,
-            loyaltyTier: 'new'
+            firstContact: new Date(),
+            lastContact: new Date(),
+            messageCount: 0,
+            interests: [],
+            bookingIntent: false,
+            preferredContactTime: null
         };
-        sessionStorage.guests.set(phoneNumber, guest);
-        console.log('👤 Created new guest session:', guest.name);
+        guestSessions.set(phoneNumber, guest);
+        conversationHistory.set(phoneNumber, []);
+        console.log('✅ New guest session created');
     } else {
-        guest.updatedAt = new Date();
-        console.log('✅ Found existing guest session:', guest.name);
+        guest.lastContact = new Date();
+        guest.messageCount += 1;
+        console.log(`✅ Updated existing guest session (${guest.messageCount} messages)`);
     }
     
     return guest;
 }
 
-function saveMessageToSession(guestId, messageText, direction = 'incoming', messageId = null) {
-    console.log('💾 Saving message to session');
+function addToConversationHistory(phoneNumber, message, direction = 'incoming') {
+    const history = conversationHistory.get(phoneNumber) || [];
     
-    const message = {
-        id: `msg_${Date.now()}`,
-        guestId: guestId,
-        content: messageText,
+    history.push({
+        message: message,
         direction: direction,
-        platform: 'whatsapp',
-        messageId: messageId,
-        createdAt: new Date()
-    };
+        timestamp: new Date(),
+        processed: true
+    });
     
-    if (!sessionStorage.conversations.has(guestId)) {
-        sessionStorage.conversations.set(guestId, []);
+    // Keep only last 20 messages
+    if (history.length > 20) {
+        history.splice(0, history.length - 20);
     }
     
-    const conversation = sessionStorage.conversations.get(guestId);
-    conversation.push(message);
+    conversationHistory.set(phoneNumber, history);
     
-    // Keep only last 20 messages per guest
-    if (conversation.length > 20) {
-        conversation.splice(0, conversation.length - 20);
-    }
-    
-    console.log('✅ Message saved to session');
-    return message;
+    // Update guest interests based on conversation
+    updateGuestInterests(phoneNumber, message);
 }
 
-function getGuestContextFromSession(guest) {
-    console.log('📋 Building guest context from session');
+function updateGuestInterests(phoneNumber, message) {
+    const guest = guestSessions.get(phoneNumber);
+    if (!guest) return;
+    
+    const msg = message.toLowerCase();
+    const interests = guest.interests;
+    
+    // Track interests
+    if (msg.includes('wedding') && !interests.includes('wedding')) {
+        interests.push('wedding');
+    }
+    if (msg.includes('anniversary') && !interests.includes('anniversary')) {
+        interests.push('anniversary');
+    }
+    if (msg.includes('organic') || msg.includes('farm') && !interests.includes('organic_farm')) {
+        interests.push('organic_farm');
+    }
+    if (msg.includes('book') || msg.includes('room') || msg.includes('stay')) {
+        guest.bookingIntent = true;
+    }
+    
+    // Update guest session
+    guestSessions.set(phoneNumber, guest);
+}
+
+function getGuestContext(phoneNumber) {
+    const guest = guestSessions.get(phoneNumber);
+    const history = conversationHistory.get(phoneNumber) || [];
     
     if (!guest) return '';
     
-    const conversation = sessionStorage.conversations.get(guest.id) || [];
-    const messageCount = conversation.length;
+    const isReturning = guest.messageCount > 1;
+    const hasInterests = guest.interests.length > 0;
+    const hasBookingIntent = guest.bookingIntent;
     
-    let context = `Guest Information (Session):
+    let context = `Guest Profile:
 - Name: ${guest.name}
 - Phone: ${guest.phone}
-- Session messages: ${messageCount}
-- Loyalty tier: ${guest.loyaltyTier}
-- Join time: ${guest.createdAt.toLocaleString()}`;
+- First contact: ${guest.firstContact.toLocaleDateString()}
+- Total messages: ${guest.messageCount}
+- Returning conversation: ${isReturning ? 'Yes' : 'No'}`;
 
-    if (messageCount > 0) {
-        const lastMessage = conversation[conversation.length - 1];
-        context += `
-- Last message: ${lastMessage.createdAt.toLocaleString()}
-- Conversation active: Yes`;
+    if (hasInterests) {
+        context += `\n- Interests: ${guest.interests.join(', ')}`;
     }
-
-    // Simulate booking context based on conversation history
-    const bookingKeywords = conversation.filter(msg => 
-        msg.content.toLowerCase().includes('book') || 
-        msg.content.toLowerCase().includes('room') ||
-        msg.content.toLowerCase().includes('stay')
-    );
-
-    if (bookingKeywords.length > 0) {
-        context += `
-- Booking interest: High (mentioned ${bookingKeywords.length} times)`;
+    
+    if (hasBookingIntent) {
+        context += `\n- Booking intent: High`;
     }
-
+    
+    if (history.length > 0) {
+        const recentMessages = history.slice(-3).map(h => `${h.direction}: ${h.message}`).join('\n');
+        context += `\n- Recent conversation:\n${recentMessages}`;
+    }
+    
     return context;
 }
 
-// Enhanced Claude API call with session context
-async function callClaudeWithSessionContext(messages, guestContext) {
+// Claude API integration
+async function generateIntelligentResponse(phoneNumber, message) {
+    const guestContext = getGuestContext(phoneNumber);
+    const guest = guestSessions.get(phoneNumber);
+    
     if (!CLAUDE_API_KEY) {
-        console.log('❌ Claude API not configured, using enhanced fallback');
-        return generateIntelligentSessionFallback(messages[messages.length - 1].content, guestContext);
+        return generateSmartFallback(message, guest);
     }
 
-    const systemPrompt = `You are an AI assistant for Darbar Heritage Farmstay, a beautiful heritage hotel in the countryside.
+    const systemPrompt = `You are an AI assistant for Darbar Heritage Farmstay, a beautiful boutique heritage hotel in the countryside.
 
 HOTEL INFORMATION:
 - Name: Darbar Heritage Farmstay
 - Phone: +91-9910364826
 - Email: darbarorganichotel@gmail.com
 - Rooms: 13 unique heritage rooms
-- Specialty: Organic farm-to-table dining
-- Features: Nature walks, heritage experiences, peaceful countryside setting
+- Location: Peaceful countryside setting
+- Specialty: Organic farm-to-table dining, heritage experiences
 
-GUEST CONTEXT (Current Session):
+GUEST CONTEXT:
 ${guestContext}
 
-CAPABILITIES:
-- Provide detailed hotel information
-- Help with booking inquiries
-- Answer questions about amenities, location, food
-- Handle special requests and celebrations
-- Offer personalized recommendations
+PERSONALITY: Warm, knowledgeable, and genuinely helpful. Create excitement about the heritage farm experience.
 
 INSTRUCTIONS:
-- Be warm, welcoming, and knowledgeable about the property
-- Use the guest's conversation history to personalize responses
-- For bookings, collect: dates, guest count, preferences
-- Always provide phone number +91-9910364826 for direct bookings
-- Use emojis appropriately (🏨 🌿 🍽️ 📞 etc.)
-- Create excitement about the heritage farm experience
-- Remember this is session-based (no permanent storage)`;
+- Personalize responses based on guest history and interests
+- For booking inquiries: ask for dates, guest count, preferences
+- Always provide phone number +91-9910364826 for bookings
+- Use appropriate emojis (🏨 🌿 🍽️ 📞 etc.)
+- If guest shows wedding/anniversary interest, emphasize romantic countryside setting
+- If guest mentions organic/farm, highlight the farm-to-table experience
+- Keep responses conversational and engaging`;
+
+    const conversationHistory = [
+        {
+            role: 'user',
+            content: message
+        }
+    ];
 
     try {
-        console.log('🤖 Calling Claude API with session context...');
+        console.log('🤖 Calling Claude API...');
         
         const response = await fetch(CLAUDE_API_URL, {
             method: 'POST',
@@ -180,9 +195,9 @@ INSTRUCTIONS:
             },
             body: JSON.stringify({
                 model: 'claude-3-sonnet-20240229',
-                max_tokens: 400,
+                max_tokens: 300,
                 system: systemPrompt,
-                messages: messages
+                messages: conversationHistory
             })
         });
 
@@ -191,131 +206,154 @@ INSTRUCTIONS:
         }
 
         const data = await response.json();
-        console.log('✅ Claude API response received');
+        console.log('✅ Claude response generated');
         return data.content[0].text;
+        
     } catch (error) {
-        console.error('❌ Claude API error:', error);
-        return generateIntelligentSessionFallback(messages[messages.length - 1].content, guestContext);
+        console.error('❌ Claude API error:', error.message);
+        return generateSmartFallback(message, guest);
     }
 }
 
-function generateIntelligentSessionFallback(message, guestContext) {
+function generateSmartFallback(message, guest) {
     const msg = message.toLowerCase();
-    const isReturningConversation = guestContext.includes('Session messages:') && 
-                                   !guestContext.includes('Session messages: 1');
+    const isReturning = guest && guest.messageCount > 1;
+    const hasWeddingInterest = guest && guest.interests.includes('wedding');
+    const hasBookingIntent = guest && guest.bookingIntent;
     
-    console.log('🔄 Generating intelligent session-based fallback');
+    console.log('🧠 Generating smart fallback response');
     
-    if (msg.includes('wedding') || msg.includes('event')) {
-        return `🌸 How wonderful! Darbar Heritage Farmstay would be a magical venue for your wedding! Our heritage property with organic farm setting creates the perfect romantic atmosphere.
+    // Wedding inquiries
+    if (msg.includes('wedding') || msg.includes('marry') || msg.includes('ceremony')) {
+        return `🌸 How magical! Darbar Heritage Farmstay would be absolutely perfect for your wedding celebration!
 
-For wedding planning, our events team at +91-9910364826 can help with:
-🌿 Heritage courtyard ceremonies  
-🍽️ Farm-to-table catering with organic produce
-🏛️ Traditional heritage accommodations for guests
-🌺 Floral arrangements with fresh farm flowers
+Our countryside heritage property offers:
+💒 Beautiful heritage courtyard for ceremonies
+🌿 Organic farm setting with natural beauty
+🍽️ Farm-to-table catering with fresh produce
+🏛️ Authentic heritage accommodations for guests
+🌺 Romantic countryside atmosphere
 
-What date are you considering? I'd love to help you create the perfect countryside wedding! 💒`;
+Our events team at +91-9910364826 specializes in creating unforgettable countryside weddings. When are you planning your special day? ✨`;
     }
     
-    if (msg.includes('book') || msg.includes('room') || msg.includes('stay')) {
-        const greeting = isReturningConversation ? 
-            `Welcome back! I see we were discussing your stay.` : 
+    // Booking inquiries
+    if (msg.includes('book') || msg.includes('room') || msg.includes('stay') || msg.includes('reservation')) {
+        const greeting = isReturning ? 
+            `Welcome back! I see you're interested in booking with us.` : 
             `Welcome to Darbar Heritage Farmstay!`;
             
-        return `🏨 ${greeting} I'd be delighted to help you plan your countryside retreat!
+        let specialOffer = '';
+        if (hasWeddingInterest) {
+            specialOffer = '\n🌸 Perfect for your wedding celebration! ';
+        }
+        
+        return `🏨 ${greeting} I'd be delighted to help you plan your countryside retreat!${specialOffer}
 
-Our heritage property offers:
+Our heritage property features:
 🛏️ 13 unique heritage rooms with modern comfort
-🌿 Organic farm experiences and nature walks  
+🌾 Organic farm experiences and nature walks
 🍽️ Fresh farm-to-table dining
 🏛️ Authentic heritage cultural experiences
 
-To check availability and book:
+To book your perfect stay:
 📅 What dates are you considering?
 👥 How many guests?
-🌟 Any special preferences or occasions?
+🌟 Any special occasions or preferences?
 
-Call us directly at +91-9910364826 for immediate booking assistance! 📞`;
+Call our team at +91-9910364826 for immediate booking assistance! 📞`;
     }
     
-    if (msg.includes('food') || msg.includes('meal') || msg.includes('dining')) {
-        return `🍽️ The dining experience at Darbar Heritage Farmstay is truly special! We're passionate about our farm-to-table approach:
+    // Food and dining
+    if (msg.includes('food') || msg.includes('meal') || msg.includes('dining') || msg.includes('organic')) {
+        return `🍽️ The dining experience at Darbar Heritage Farmstay is truly exceptional!
 
-🌾 **Fresh Organic Produce** - Grown right here on our farm
-🥘 **Traditional & Contemporary Cuisine** - Authentic flavors with modern presentation  
-🌅 **All Meals Available** - Breakfast, lunch, and dinner
-🌱 **Dietary Accommodations** - We cater to all dietary preferences
-👨‍🍳 **Heritage Cooking** - Traditional methods with fresh ingredients
+🌾 **Farm-to-Table Excellence:**
+• Fresh organic vegetables grown on our property
+• Traditional recipes with modern presentation
+• All meals available: breakfast, lunch, dinner
+• Dietary preferences accommodated
+• Heritage cooking methods with fresh ingredients
 
-Our chefs create meals using vegetables, herbs, and ingredients harvested fresh from our organic farm. It's a true farm-to-fork experience!
+Our chefs harvest ingredients fresh from our organic farm daily - it's a true farm-to-fork experience that connects you with the land and local traditions.
 
-Do you have any dietary preferences we should know about? 🥗`;
+Do you have any dietary preferences we should know about? Our team at +91-9910364826 can customize meals for you! 🥗`;
     }
     
-    if (msg.includes('location') || msg.includes('direction') || msg.includes('where')) {
-        return `📍 Darbar Heritage Farmstay is nestled in beautiful, serene countryside - the perfect escape from city life!
+    // Location and directions
+    if (msg.includes('location') || msg.includes('where') || msg.includes('direction') || msg.includes('address')) {
+        return `📍 Darbar Heritage Farmstay is nestled in beautiful, serene countryside - the perfect escape from urban life!
 
-🚗 **Getting Here**: We provide detailed directions upon booking
-🗺️ **Scenic Route**: The journey itself is part of the experience
-🌄 **Countryside Setting**: Peaceful, natural surroundings
-🏞️ **Away from Crowds**: Perfect for relaxation and rejuvenation
+🌄 **Our Location:**
+• Peaceful countryside setting away from crowds
+• Surrounded by organic farming land
+• Traditional heritage architecture
+• Easy access with scenic drive
 
-For specific directions from your location, please call us at +91-9910364826 - our team will guide you step by step and ensure you have the most scenic route!
+🚗 **Getting Here:**
+Our team provides detailed, personalized directions upon booking. The journey itself becomes part of your countryside experience!
 
-Where will you be traveling from? This helps us provide the best directions! 🛣️`;
+For specific directions from your location, call us at +91-9910364826 - we'll guide you to our little slice of paradise! 🗺️
+
+Where will you be traveling from?`;
     }
     
-    if (msg.includes('price') || msg.includes('cost') || msg.includes('rate')) {
-        return `💰 Our heritage room rates are designed to offer exceptional value for the complete countryside experience:
+    // Pricing inquiries
+    if (msg.includes('price') || msg.includes('cost') || msg.includes('rate') || msg.includes('expensive')) {
+        return `💰 Our heritage accommodation offers exceptional value for the complete countryside experience:
 
-📊 **Pricing varies by**:
-• Season (peak, regular, off-season)
-• Room type (we have different heritage room categories)  
+🏨 **What Influences Pricing:**
+• Season (peak, regular, off-season rates)
+• Room category (13 different heritage rooms)
 • Package inclusions (meals, activities, experiences)
+• Duration of stay
 
-🎯 **What's Included**:
+🎁 **Included in Your Stay:**
 • Heritage accommodation with modern amenities
-• Organic farm experiences
-• Access to nature walks and farm tours
-• Complimentary Wi-Fi
+• Access to organic farm and nature walks
+• Complimentary Wi-Fi throughout property
+• Cultural heritage experiences
 
-For current rates and special packages for your dates, please call +91-9910364826. Our team can create a personalized quote based on your preferences!
+For personalized pricing and current offers, our reservations team at +91-9910364826 will create a perfect package for your dates and preferences!
 
-When are you planning to visit? I can have them prepare specific pricing for you! ✨`;
+When are you planning to visit us? 📅`;
     }
     
-    // Default response
-    const greeting = isReturningConversation ? 
-        `Thank you for continuing our conversation!` : 
-        `Welcome to Darbar Heritage Farmstay!`;
+    // Default personalized response
+    const greeting = isReturning ? 
+        `Thank you for continuing our conversation! ` : 
+        `Welcome to Darbar Heritage Farmstay! `;
         
-    return `🙏 ${greeting} I'm here to help you discover our beautiful heritage property and organic farm experience.
+    let personalNote = '';
+    if (hasBookingIntent) {
+        personalNote = 'I see you\'re interested in booking with us - how exciting! ';
+    }
+    if (hasWeddingInterest) {
+        personalNote += 'Our romantic countryside setting would be perfect for your celebration! ';
+    }
+    
+    return `🙏 ${greeting}${personalNote}I'm here to help you discover our beautiful heritage property and organic farm experience.
 
 Whether you're interested in:
-🏨 Booking a heritage room
+🏨 Booking our heritage accommodations
 🌿 Learning about our organic farm
-🍽️ Our farm-to-table dining experience  
-🎉 Planning a special celebration
+🍽️ Our farm-to-table dining
+🎉 Planning special celebrations
 📍 Getting directions to our property
 
-I'm here to assist! For immediate bookings and detailed information, our team at +91-9910364826 is always ready to help.
+I'm here to assist! Our knowledgeable team at +91-9910364826 is always ready to help with bookings and detailed information.
 
 What would you like to know about Darbar Heritage Farmstay? 🌾`;
 }
 
-// Send WhatsApp message
+// WhatsApp message sending
 async function sendWhatsAppMessage(to, message, contextMessageId = null) {
-    console.log('\n📤 Sending session-based WhatsApp response...');
-    console.log('  To:', to);
-    console.log('  Message preview:', message.substring(0, 100) + '...');
+    console.log(`📤 Sending message to ${to}`);
     
     if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
         console.log('❌ WhatsApp credentials missing');
         return false;
     }
-    
-    const url = `https://graph.facebook.com/v19.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
     
     const payload = {
         messaging_product: "whatsapp",
@@ -332,7 +370,7 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
     }
     
     try {
-        const response = await fetch(url, {
+        const response = await fetch(`https://graph.facebook.com/v19.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
@@ -344,10 +382,10 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
         const data = await response.json();
         
         if (response.ok && data.messages) {
-            console.log('✅ Session-based response sent successfully!');
+            console.log('✅ Message sent successfully');
             return { success: true, messageId: data.messages[0].id };
         } else {
-            console.log('❌ Message failed to send:', data.error);
+            console.log('❌ Message failed:', data.error);
             return { success: false, error: data.error };
         }
     } catch (error) {
@@ -356,15 +394,13 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
     }
 }
 
-// Process incoming message with session context
-async function processIncomingMessageSession(message) {
-    const guestPhone = message.from;
+// Main message handler
+async function handleIncomingMessage(message) {
+    const phoneNumber = message.from;
     const messageText = message.text?.body || '';
     const messageId = message.id;
     
-    console.log('\n📥 Processing message with session context:');
-    console.log('  From:', guestPhone);
-    console.log('  Message:', messageText);
+    console.log(`\n📥 Processing message from ${phoneNumber}: "${messageText}"`);
     
     if (!messageText.trim()) {
         console.log('⏭️ Skipping non-text message');
@@ -372,63 +408,42 @@ async function processIncomingMessageSession(message) {
     }
     
     try {
-        // Create or get guest session
-        const guest = findOrCreateGuestSession(guestPhone);
+        // Create or update guest session
+        const guest = createOrUpdateGuestSession(phoneNumber);
         
-        // Save incoming message to session
-        saveMessageToSession(guest.id, messageText, 'incoming', messageId);
+        // Add to conversation history
+        addToConversationHistory(phoneNumber, messageText, 'incoming');
         
-        // Get guest context from session
-        const guestContext = getGuestContextFromSession(guest);
+        // Generate intelligent response
+        const aiResponse = await generateIntelligentResponse(phoneNumber, messageText);
         
-        // Get recent conversation from session
-        const conversation = sessionStorage.conversations.get(guest.id) || [];
-        const messages = conversation
-            .slice(-10) // Last 10 messages
-            .map(msg => ({
-                role: msg.direction === 'incoming' ? 'user' : 'assistant',
-                content: msg.content
-            }));
-        
-        // Add current message if not already included
-        if (messages.length === 0 || messages[messages.length - 1].content !== messageText) {
-            messages.push({
-                role: 'user',
-                content: messageText
-            });
-        }
-        
-        // Generate AI response with session context
-        const aiResponse = await callClaudeWithSessionContext(messages, guestContext);
-        console.log('🤖 Claude generated session-based response');
-        
-        // Save AI response to session
-        saveMessageToSession(guest.id, aiResponse, 'outgoing');
+        // Add AI response to conversation history
+        addToConversationHistory(phoneNumber, aiResponse, 'outgoing');
         
         // Send WhatsApp reply
-        const result = await sendWhatsAppMessage(guestPhone, aiResponse, messageId);
+        const result = await sendWhatsAppMessage(phoneNumber, aiResponse, messageId);
         
         if (result.success) {
-            console.log('✅ Session-based intelligent response sent successfully!');
+            console.log('✅ Intelligent response sent successfully!');
         } else {
             console.log('❌ Failed to send response:', result.error);
         }
         
     } catch (error) {
-        console.error('❌ Error in session-based message processing:', error);
+        console.error('❌ Error processing message:', error);
     }
 }
 
 // Routes
 app.get('/', (req, res) => {
     res.json({
-        service: 'ChatHotel Session-Based AI',
-        version: '5.0.0',
-        mode: 'Session Storage (No Database Required)',
+        service: 'ChatHotel Enhanced Session AI',
+        version: '6.0.0',
+        mode: 'Enhanced Session Storage',
         ai_powered: true,
         claude_integration: !!CLAUDE_API_KEY,
-        session_guests: sessionStorage.guests.size,
-        active_conversations: sessionStorage.conversations.size,
+        active_guests: guestSessions.size,
+        total_conversations: Array.from(conversationHistory.values()).reduce((total, history) => total + history.length, 0),
         timestamp: new Date().toISOString()
     });
 });
@@ -436,43 +451,47 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'OK', 
-        service: 'ChatHotel Session AI',
-        mode: 'Session Storage',
+        service: 'ChatHotel Enhanced Session AI',
         claude_available: !!CLAUDE_API_KEY,
-        session_active: true,
+        whatsapp_ready: !!WHATSAPP_ACCESS_TOKEN,
+        active_sessions: guestSessions.size,
         uptime: process.uptime()
     });
 });
 
-// Session status endpoint
-app.get('/session-status', (req, res) => {
-    const sessions = Array.from(sessionStorage.guests.values()).map(guest => ({
-        name: guest.name,
-        phone: guest.phone.slice(-4) + 'XXX', // Privacy
-        messages: sessionStorage.conversations.get(guest.id)?.length || 0,
-        last_active: guest.updatedAt
-    }));
+// Guest analytics endpoint
+app.get('/analytics', (req, res) => {
+    const guests = Array.from(guestSessions.values());
+    const totalMessages = Array.from(conversationHistory.values()).reduce((total, history) => total + history.length, 0);
     
     res.json({
-        mode: 'Session Storage',
-        total_guests: sessionStorage.guests.size,
-        total_conversations: sessionStorage.conversations.size,
-        sessions: sessions
+        total_guests: guests.length,
+        total_messages: totalMessages,
+        booking_intent_guests: guests.filter(g => g.bookingIntent).length,
+        guests_with_interests: guests.filter(g => g.interests.length > 0).length,
+        popular_interests: guests.reduce((acc, guest) => {
+            guest.interests.forEach(interest => {
+                acc[interest] = (acc[interest] || 0) + 1;
+            });
+            return acc;
+        }, {}),
+        average_messages_per_guest: guests.length > 0 ? (totalMessages / guests.length).toFixed(1) : 0
     });
 });
 
-// Guest session lookup
-app.get('/guest-session/:phone', (req, res) => {
-    const guest = sessionStorage.guests.get(req.params.phone);
+// Guest details endpoint
+app.get('/guest/:phone', (req, res) => {
+    const guest = guestSessions.get(req.params.phone);
+    const history = conversationHistory.get(req.params.phone) || [];
+    
     if (!guest) {
-        return res.status(404).json({ error: 'Guest session not found' });
+        return res.status(404).json({ error: 'Guest not found' });
     }
     
-    const conversation = sessionStorage.conversations.get(guest.id) || [];
     res.json({
         guest: guest,
-        messages: conversation,
-        context: getGuestContextFromSession(guest)
+        conversation_history: history,
+        context: getGuestContext(req.params.phone)
     });
 });
 
@@ -486,13 +505,14 @@ app.get('/webhook', (req, res) => {
         console.log('✅ Webhook verified');
         res.status(200).send(challenge);
     } else {
+        console.log('❌ Webhook verification failed');
         res.sendStatus(403);
     }
 });
 
 // Main webhook handler
 app.post('/webhook', async (req, res) => {
-    console.log('\n=== INCOMING WEBHOOK (SESSION MODE) ===');
+    console.log('\n=== INCOMING WEBHOOK ===');
     const body = req.body;
     
     res.status(200).send('OK');
@@ -502,7 +522,7 @@ app.post('/webhook', async (req, res) => {
             for (const change of entry.changes || []) {
                 if (change.field === 'messages' && change.value.messages) {
                     for (const message of change.value.messages) {
-                        await processIncomingMessageSession(message);
+                        await handleIncomingMessage(message);
                     }
                 }
             }
@@ -512,32 +532,34 @@ app.post('/webhook', async (req, res) => {
 
 // Server startup
 app.listen(PORT, () => {
-    console.log('\n🚀 ChatHotel Session-Based AI Starting...');
+    console.log('\n🚀 ChatHotel Enhanced Session AI Starting...');
     console.log('='.repeat(60));
     console.log(`✅ Server running on port ${PORT}`);
-    console.log(`💾 Storage Mode: Session-based (memory only)`);
-    console.log(`🤖 Claude API: ${CLAUDE_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`💾 Storage: Enhanced session-based (in-memory)`);
+    console.log(`🤖 Claude API: ${CLAUDE_API_KEY ? '✅ Configured' : '❌ Not configured (using smart fallback)'}`);
     console.log(`📱 WhatsApp: ${WHATSAPP_ACCESS_TOKEN ? '✅ Ready' : '❌ Not configured'}`);
     console.log('');
-    console.log('🎯 Features:');
-    console.log('   ✅ Intelligent conversation management');
-    console.log('   ✅ Session-based guest context');
-    console.log('   ✅ Claude-powered responses');
-    console.log('   ✅ No database dependency');
-    console.log('   ✅ Production-ready for immediate use');
+    console.log('🎯 Enhanced Features:');
+    console.log('   ✅ Guest session management with interests tracking');
+    console.log('   ✅ Conversation history and context awareness');
+    console.log('   ✅ Claude-powered intelligent responses');
+    console.log('   ✅ Smart fallback system for high availability');
+    console.log('   ✅ Booking intent detection');
+    console.log('   ✅ Personalized responses based on guest history');
     console.log('');
-    console.log('🔗 Endpoints:');
-    console.log('   GET /session-status - View active sessions');
-    console.log('   GET /guest-session/{phone} - Guest session lookup');
+    console.log('🔗 Available Endpoints:');
+    console.log('   GET / - Service status');
+    console.log('   GET /health - Health check');
+    console.log('   GET /analytics - Guest analytics');
+    console.log('   GET /guest/{phone} - Guest session details');
     console.log('');
-    console.log('📝 Note: Using session storage - conversations reset on restart');
-    console.log('   Database integration available once Supabase is fixed');
+    console.log('💡 This version works without database and provides intelligent');
+    console.log('   guest experiences with conversation memory and personalization!');
     console.log('='.repeat(60));
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('\n🔄 Shutting down session-based server...');
-    console.log(`📊 Final stats: ${sessionStorage.guests.size} guests, ${sessionStorage.conversations.size} conversations`);
+    console.log('\n🔄 Shutting down...');
+    console.log(`📊 Final stats: ${guestSessions.size} guests, ${Array.from(conversationHistory.values()).reduce((total, history) => total + history.length, 0)} messages`);
     process.exit(0);
 });
