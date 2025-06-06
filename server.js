@@ -476,12 +476,13 @@ async function saveMessage(guestId, messageText, direction = 'incoming', message
     console.log('💾 Saving message to database');
     
     try {
+        // Try with whatsappMessageId (required field)
         const message = await prisma.whatsAppMessage.create({
             data: {
                 guestId: guestId,
                 content: messageText,
                 direction: direction,
-                messageId: messageId,
+                whatsappMessageId: messageId || `generated_${Date.now()}_${Math.random()}`, // Generate if null
                 createdAt: new Date()
             }
         });
@@ -489,14 +490,16 @@ async function saveMessage(guestId, messageText, direction = 'incoming', message
         console.log('✅ Message saved with ID:', message.id);
         return message;
     } catch (error) {
-        console.error('❌ Error saving message:', error.message);
+        console.error('❌ Error saving with whatsappMessageId:', error.message);
         
+        // Fallback: try without optional fields
         try {
             const message = await prisma.whatsAppMessage.create({
                 data: {
                     guestId: guestId,
                     content: messageText,
                     direction: direction,
+                    whatsappMessageId: `fallback_${Date.now()}`, // Always provide this required field
                     createdAt: new Date()
                 }
             });
@@ -504,9 +507,100 @@ async function saveMessage(guestId, messageText, direction = 'incoming', message
             console.log('✅ Message saved (fallback):', message.id);
             return message;
         } catch (fallbackError) {
-            console.error('❌ All message save attempts failed');
-            return null;
+            console.error('❌ Even fallback message save failed:', fallbackError.message);
+            
+            // Last resort: try with absolute minimum required fields
+            try {
+                const message = await prisma.whatsAppMessage.create({
+                    data: {
+                        guestId: guestId,
+                        content: messageText,
+                        whatsappMessageId: `min_${guestId}_${Date.now()}`
+                    }
+                });
+                
+                console.log('✅ Message saved (minimal):', message.id);
+                return message;
+            } catch (minimalError) {
+                console.error('❌ All message save attempts failed:', minimalError.message);
+                return null;
+            }
         }
+    }
+}
+
+// Alternative: Create messages table that definitely works
+async function saveMessageToAlternativeTable(guestId, messageText, direction = 'incoming', messageId = null) {
+    console.log('💾 Saving to alternative messages table');
+    
+    try {
+        // Try to use a simpler message table or create one
+        const message = await prisma.$executeRaw`
+            INSERT INTO simple_messages (guest_id, content, direction, message_id, created_at)
+            VALUES (${guestId}, ${messageText}, ${direction}, ${messageId || 'none'}, ${new Date()})
+        `;
+        
+        console.log('✅ Message saved to alternative table');
+        return { id: Date.now(), content: messageText };
+    } catch (error) {
+        console.error('❌ Alternative save failed:', error.message);
+        
+        // Store in memory as absolute fallback
+        const memoryKey = `messages_${guestId}`;
+        if (!global.memoryMessages) global.memoryMessages = {};
+        if (!global.memoryMessages[memoryKey]) global.memoryMessages[memoryKey] = [];
+        
+        global.memoryMessages[memoryKey].push({
+            id: Date.now(),
+            guestId,
+            content: messageText,
+            direction,
+            messageId,
+            createdAt: new Date()
+        });
+        
+        console.log('✅ Message saved to memory fallback');
+        return { id: Date.now(), content: messageText };
+    }
+}
+
+// Enhanced conversation retrieval that handles the failures
+async function getConversationHistory(guestId, limit = 10) {
+    console.log('💬 Getting conversation history for guest:', guestId);
+    
+    try {
+        // Try to get from database first
+        const messages = await prisma.whatsAppMessage.findMany({
+            where: { guestId: guestId },
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+            select: {
+                id: true,
+                content: true,
+                direction: true,
+                createdAt: true
+            }
+        });
+        
+        console.log(`📚 Retrieved ${messages.length} messages from database`);
+        return messages;
+        
+    } catch (error) {
+        console.error('❌ Database retrieval failed:', error.message);
+        
+        // Fallback to memory
+        const memoryKey = `messages_${guestId}`;
+        if (global.memoryMessages && global.memoryMessages[memoryKey]) {
+            const messages = global.memoryMessages[memoryKey]
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                .slice(0, limit);
+            
+            console.log(`📚 Retrieved ${messages.length} messages from memory`);
+            return messages;
+        }
+        
+        console.log('📚 No conversation history found');
+        return [];
     }
 }
 
@@ -822,12 +916,13 @@ async function generateSmartFallback(message, guestContext) {
 
 // Enhanced message processing with memory
 // Enhanced message processing that actually works
-async function processIncomingMessage(message) {
+// Updated processIncomingMessage with working message saving
+async function processIncomingMessageFixed(message) {
     const guestPhone = message.from;
     const messageText = message.text?.body || '';
     const messageId = message.id;
     
-    console.log('\n📥 Processing message with TRULY smart system:');
+    console.log('\n📥 Processing message with FIXED saving:');
     console.log('  From:', guestPhone);
     console.log('  Message:', messageText);
     
@@ -844,20 +939,16 @@ async function processIncomingMessage(message) {
             return;
         }
         
-        // 2. Save incoming message FIRST
-        await saveMessage(guest.id, messageText, 'incoming', messageId);
+        // 2. Save incoming message with proper field name
+        const savedMessage = await saveMessage(guest.id, messageText, 'incoming', messageId);
+        console.log('✅ Message save result:', savedMessage ? 'Success' : 'Failed but continuing');
         
-        // 3. Get FULL conversation history to analyze
-        const recentMessages = await prisma.whatsAppMessage.findMany({
-            where: { guestId: guest.id },
-            orderBy: { createdAt: 'desc' },
-            take: 10
-        }).catch(() => []);
-        
+        // 3. Get conversation history (with fallbacks)
+        const recentMessages = await getConversationHistory(guest.id, 10);
         console.log(`💬 Found ${recentMessages.length} recent messages`);
         
         // 4. Analyze conversation to avoid repetition
-        const conversationAnalysis = analyzeFullConversation(recentMessages, messageText);
+        const conversationAnalysis = analyzeFullConversationFixed(recentMessages, messageText);
         console.log('🧠 Conversation analysis:', conversationAnalysis);
         
         // 5. Generate SMART response based on analysis
@@ -873,7 +964,7 @@ Call +91-9910364826 for immediate assistance! 🌿`;
             aiResponse = await generateSmartQuote(conversationAnalysis);
         } else {
             // Ask for missing info intelligently
-            aiResponse = generateIntelligentQuestion(conversationAnalysis, recentMessages);
+            aiResponse = generateIntelligentQuestionFixed(conversationAnalysis, recentMessages);
         }
         
         console.log('🤖 Smart response generated:', aiResponse);
@@ -885,7 +976,7 @@ Call +91-9910364826 for immediate assistance! 🌿`;
         const result = await sendWhatsAppMessage(guestPhone, aiResponse, messageId);
         
         if (result.success) {
-            console.log('✅ Truly smart response sent!');
+            console.log('✅ FIXED smart response sent!');
         } else {
             console.log('❌ Failed to send response:', result.error);
         }
@@ -895,8 +986,8 @@ Call +91-9910364826 for immediate assistance! 🌿`;
     }
 }
 
-// Analyze the FULL conversation to understand context
-function analyzeFullConversation(messages, currentMessage) {
+// Fixed conversation analysis that works with actual message structure
+function analyzeFullConversationFixed(messages, currentMessage) {
     const allMessages = [
         ...messages.reverse().map(m => m.content),
         currentMessage
@@ -980,11 +1071,14 @@ function analyzeFullConversation(messages, currentMessage) {
     return analysis;
 }
 
-// Generate intelligent question that doesn't repeat
-function generateIntelligentQuestion(analysis, recentMessages) {
-    // If guest said "not yet decided", be patient
-    const lastMessage = recentMessages[0]?.content.toLowerCase() || '';
-    if (lastMessage.includes('not yet decided') || lastMessage.includes('not decided')) {
+// Fixed intelligent question generator
+function generateIntelligentQuestionFixed(analysis, recentMessages) {
+    // Check if guest indicated uncertainty about dates
+    const lastFewMessages = recentMessages.slice(0, 3).map(m => m.content.toLowerCase()).join(' ');
+    
+    if (lastFewMessages.includes('not yet decided') || 
+        lastFewMessages.includes('don\'t know yet') || 
+        lastFewMessages.includes('not decided')) {
         return `No problem! Take your time deciding. 
 When you're ready, just share your dates and I'll help with availability.
 Call +91-9910364826 anytime! 🌿`;
