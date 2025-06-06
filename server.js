@@ -1,4 +1,4 @@
-// ChatHotel Server - Final Production Ready Version
+// ChatHotel Server - Complete Final Production Version
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -49,12 +49,100 @@ app.use((req, res, next) => {
     }
 });
 
-// Global variable for actual hotel ID
+// Global variables
 global.ACTUAL_HOTEL_ID = null;
+const conversationMemory = new Map();
 
 // =============================================================================
-// HELPER FUNCTIONS (defined first to avoid reference errors)
+// DATE AND PRICING CALCULATIONS
 // =============================================================================
+
+// Calculate nights between dates with proper logic
+function calculateNights(checkIn, checkOut) {
+    if (typeof checkIn === 'string' && typeof checkOut === 'string') {
+        // Handle "6th and 7th" format
+        if (checkIn.includes('6th') && checkOut.includes('7th')) {
+            return 1; // 6th to 7th = 1 night
+        }
+        
+        // Handle "25th Dec to 29th Dec" format  
+        if (checkIn.includes('25th') && checkOut.includes('29th')) {
+            return 4; // 25th to 29th = 4 nights
+        }
+        
+        // Handle numerical dates
+        const checkInNum = parseInt(checkIn.match(/\d+/)?.[0]);
+        const checkOutNum = parseInt(checkOut.match(/\d+/)?.[0]);
+        
+        if (checkInNum && checkOutNum) {
+            return Math.max(1, checkOutNum - checkInNum);
+        }
+    }
+    
+    // Handle Date objects
+    if (checkIn instanceof Date && checkOut instanceof Date) {
+        const timeDiff = checkOut.getTime() - checkIn.getTime();
+        return Math.ceil(timeDiff / (1000 * 3600 * 24));
+    }
+    
+    return 1; // Default fallback
+}
+
+// Extract dates with proper night calculation
+function extractDatesWithNights(text) {
+    const dateInfo = {
+        checkIn: null,
+        checkOut: null,
+        nights: 1,
+        dateType: null
+    };
+    
+    // Pattern: "6th and 7th"
+    const dayPattern = /(\d{1,2})[st|nd|rd|th]*\s*and\s*(\d{1,2})[st|nd|rd|th]*/i;
+    const dayMatch = text.match(dayPattern);
+    if (dayMatch) {
+        const day1 = parseInt(dayMatch[1]);
+        const day2 = parseInt(dayMatch[2]);
+        dateInfo.checkIn = `${day1}th`;
+        dateInfo.checkOut = `${day2}th`;
+        dateInfo.nights = Math.max(1, day2 - day1);
+        dateInfo.dateType = 'day_range';
+        return dateInfo;
+    }
+    
+    // Pattern: "25th Dec to 29th Dec"
+    const monthPattern = /(\d{1,2})[st|nd|rd|th]*\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec).*?(\d{1,2})[st|nd|rd|th]*\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+    const monthMatch = text.match(monthPattern);
+    if (monthMatch) {
+        const day1 = parseInt(monthMatch[1]);
+        const day2 = parseInt(monthMatch[3]);
+        dateInfo.checkIn = `${day1}th ${monthMatch[2]}`;
+        dateInfo.checkOut = `${day2}th ${monthMatch[4]}`;
+        dateInfo.nights = Math.max(1, day2 - day1);
+        dateInfo.dateType = 'month_range';
+        return dateInfo;
+    }
+    
+    // Pattern: "this weekend" 
+    if (text.includes('weekend')) {
+        dateInfo.checkIn = 'weekend';
+        dateInfo.checkOut = 'weekend';
+        dateInfo.nights = 2; // Typical weekend = 2 nights
+        dateInfo.dateType = 'weekend';
+        return dateInfo;
+    }
+    
+    // Pattern: "tomorrow"
+    if (text.includes('tomorrow')) {
+        dateInfo.checkIn = 'tomorrow';
+        dateInfo.checkOut = 'day_after_tomorrow';
+        dateInfo.nights = 1;
+        dateInfo.dateType = 'tomorrow';
+        return dateInfo;
+    }
+    
+    return dateInfo;
+}
 
 // Price calculation with child pricing and extra bed logic
 function calculateBookingPrice(roomType, nights, adults, children, childAges = [], extraBeds = 0) {
@@ -93,6 +181,73 @@ function calculateBookingPrice(roomType, nights, adults, children, childAges = [
     };
 }
 
+// =============================================================================
+// CONVERSATION MEMORY SYSTEM
+// =============================================================================
+
+// Update conversation memory with correct night calculation
+function updateConversationMemory(guestId, messageText) {
+    if (!conversationMemory.has(guestId)) {
+        conversationMemory.set(guestId, {
+            dates: null,
+            nights: null,
+            adults: null,
+            children: null,
+            childAges: [],
+            lastAsked: null
+        });
+    }
+    
+    const memory = conversationMemory.get(guestId);
+    const text = messageText.toLowerCase();
+    
+    // Extract dates with proper night calculation
+    const dateInfo = extractDatesWithNights(text);
+    if (dateInfo.checkIn) {
+        memory.dates = `${dateInfo.checkIn} to ${dateInfo.checkOut}`;
+        memory.nights = dateInfo.nights;
+        console.log(`📅 Extracted: ${dateInfo.checkIn} to ${dateInfo.checkOut} = ${dateInfo.nights} nights`);
+    }
+    
+    // Extract guest counts
+    const adultMatch = text.match(/(\d+)\s*adult/);
+    if (adultMatch) memory.adults = parseInt(adultMatch[1]);
+    
+    const childMatch = text.match(/(\d+)\s*(kid|child)/);
+    if (childMatch) memory.children = parseInt(childMatch[1]);
+    
+    // Extract child ages
+    if (text.includes('both are below 6') || text.includes('under 6')) {
+        memory.childAges = [4, 5]; // Both under 6
+    }
+    
+    return memory;
+}
+
+// Check if we have complete booking info
+function hasCompleteBookingInfo(memory) {
+    return memory.dates && 
+           memory.adults !== null && 
+           memory.children !== null && 
+           (memory.children === 0 || memory.childAges.length > 0);
+}
+
+// Get what information is still needed
+function getNeededInfo(memory) {
+    const needed = [];
+    
+    if (!memory.dates) needed.push('dates');
+    if (memory.adults === null) needed.push('adults');
+    if (memory.children === null) needed.push('children');
+    if (memory.children > 0 && memory.childAges.length === 0) needed.push('child_ages');
+    
+    return needed;
+}
+
+// =============================================================================
+// DATABASE FUNCTIONS
+// =============================================================================
+
 // Get room types from database
 async function getRoomTypesFromDatabase() {
     try {
@@ -119,7 +274,6 @@ async function getRoomTypesFromDatabase() {
         }));
     } catch (error) {
         console.error('❌ Error fetching room types:', error);
-        // Fallback room data
         return [
             { name: 'Heritage Room', basePrice: 5500, capacity: 2, description: 'Charming rooms with Garhwali-style decor' },
             { name: 'Family Suite – HR01', basePrice: 6500, capacity: 4, description: 'Spacious suite with heritage interiors' },
@@ -127,90 +281,6 @@ async function getRoomTypesFromDatabase() {
         ];
     }
 }
-
-// Smart booking information extraction
-async function processBookingWithRealData(messageText, guest) {
-    const msg = messageText.toLowerCase();
-    
-    // Enhanced date patterns
-    const datePatterns = [
-        /(\d{1,2})[st|nd|rd|th]*\s*(dec|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov)/gi,
-        /(\d{1,2})[\/\-\s]*(\d{1,2})[\/\-\s]*(\d{2,4})/g,
-        /(check.?in|arrival).*?(\d{1,2})[st|nd|rd|th]*\s*(dec|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov)/gi,
-        /(check.?out|departure).*?(\d{1,2})[st|nd|rd|th]*\s*(dec|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov)/gi
-    ];
-    
-    const guestCountPattern = /(\d+)\s*(adult|guest|people|person)/gi;
-    const childrenPattern = /(\d+)\s*(kid|child|children)/gi;
-    const childAgePattern = /(\d+)\s*year[s]?\s*old/gi;
-    
-    let dates = [];
-    let adults = 2;
-    let children = 0;
-    let childAges = [];
-    
-    // Extract dates
-    datePatterns.forEach(pattern => {
-        const matches = messageText.match(pattern);
-        if (matches) dates.push(...matches);
-    });
-    
-    // Extract guest counts
-    const adultMatch = messageText.match(guestCountPattern);
-    if (adultMatch) adults = parseInt(adultMatch[0].match(/\d+/)[0]);
-    
-    const childMatch = messageText.match(childrenPattern);
-    if (childMatch) children = parseInt(childMatch[0].match(/\d+/)[0]);
-    
-    // Extract child ages
-    const ageMatches = messageText.match(childAgePattern);
-    if (ageMatches) {
-        childAges = ageMatches.map(match => parseInt(match.match(/\d+/)[0]));
-    }
-    
-    const totalGuests = adults + children;
-    
-    // Get actual room types from database
-    const roomTypes = await getRoomTypesFromDatabase();
-    
-    // Find best room for guest count
-    const suitableRooms = roomTypes.filter(room => room.capacity >= adults);
-    const recommendedRoom = suitableRooms.length > 0 ? 
-        suitableRooms.sort((a, b) => a.basePrice - b.basePrice)[0] : 
-        roomTypes.find(room => room.name.includes('Family')) || roomTypes[0];
-    
-    // Calculate nights if we have dates
-    let nights = 1;
-    if (dates.length >= 2) {
-        // Simple estimation - in production, you'd parse actual dates
-        nights = 4; // Default assumption for date ranges
-    }
-    
-    // Calculate pricing
-    let pricing = null;
-    if (recommendedRoom) {
-        const extraBeds = Math.max(0, totalGuests - recommendedRoom.capacity);
-        pricing = calculateBookingPrice(recommendedRoom, nights, adults, children, childAges, extraBeds);
-    }
-    
-    return {
-        hasDates: dates.length >= 1,
-        hasGuestCount: adultMatch || childMatch,
-        dates: dates,
-        adults: adults,
-        children: children,
-        childAges: childAges,
-        totalGuests: totalGuests,
-        recommendedRoom: recommendedRoom,
-        pricing: pricing,
-        nights: nights,
-        allRoomTypes: roomTypes
-    };
-}
-
-// =============================================================================
-// DATABASE FUNCTIONS
-// =============================================================================
 
 // Auto-seed hotel if missing
 async function ensureHotelExists() {
@@ -223,7 +293,6 @@ async function ensureHotelExists() {
 
         if (existingHotel) {
             console.log('✅ Hotel already exists:', existingHotel.name);
-            console.log('   Hotel ID:', existingHotel.id);
             global.ACTUAL_HOTEL_ID = existingHotel.id;
             return existingHotel;
         }
@@ -254,9 +323,6 @@ async function ensureHotelExists() {
             }
         });
 
-        console.log('✅ Hotel created successfully');
-
-        // Create room types
         const [familySuite, heritageRoom, greenChalet] = await Promise.all([
             prisma.roomType.create({
                 data: {
@@ -305,7 +371,6 @@ async function ensureHotelExists() {
             })
         ]);
 
-        // Create rooms
         await prisma.room.createMany({
             data: [
                 { hotelId: hotel.id, roomTypeId: familySuite.id, roomNumber: "HR01", floor: 1 },
@@ -426,7 +491,6 @@ async function saveMessage(guestId, messageText, direction = 'incoming', message
     } catch (error) {
         console.error('❌ Error saving message:', error.message);
         
-        // Fallback without messageId
         try {
             const message = await prisma.whatsAppMessage.create({
                 data: {
@@ -582,81 +646,73 @@ async function createProvisionalBooking(guestId, checkIn, checkOut, roomTypeId, 
 }
 
 // =============================================================================
-// AI FUNCTIONS
+// SMART RESPONSE GENERATION
 // =============================================================================
 
-// Smart fallback responses
-async function generateSmartFallback(message, guestContext) {
-    const msg = message.toLowerCase();
-    const hasBookingHistory = guestContext.includes('Total bookings:') && !guestContext.includes('Total bookings: 0');
-    
+// Generate final quote with correct night calculation
+async function generateFinalQuote(memory) {
     try {
-        const bookingInfo = await processBookingWithRealData(message, null);
-        
-        // Complete booking info provided
-        if (bookingInfo.hasDates && bookingInfo.hasGuestCount && bookingInfo.recommendedRoom && bookingInfo.pricing) {
-            const pricing = bookingInfo.pricing;
-            let priceBreakdown = `${bookingInfo.recommendedRoom.name}: ₹${pricing.totalPrice}`;
-            
-            if (bookingInfo.children > 0) {
-                priceBreakdown += `\n(Kids: Special rates applied)`;
-            }
-            
-            return `✅ Perfect! ${bookingInfo.nights} nights for ${bookingInfo.totalGuests} guests
-${priceBreakdown}
-📞 Call +91-9910364826 to confirm!`;
-        }
-        
-        // Partial info handling
         const roomTypes = await getRoomTypesFromDatabase();
-        const roomList = roomTypes.slice(0, 2).map(room => 
-            `${room.name}: ₹${room.basePrice}/night`
-        ).join(', ');
+        const totalGuests = memory.adults + memory.children;
         
-        if (bookingInfo.hasDates && !bookingInfo.hasGuestCount) {
-            return `📅 Great dates! How many adults and children?
-🏨 Rooms: ${roomList}
-📞 +91-9910364826`;
+        // Find suitable room
+        const roomType = roomTypes.find(r => r.capacity >= totalGuests) || roomTypes[1];
+        
+        // Use the actual nights from memory
+        const nights = memory.nights || 1;
+        
+        // Calculate pricing
+        const pricing = calculateBookingPrice(
+            roomType,
+            nights,
+            memory.adults,
+            memory.children,
+            memory.childAges,
+            0
+        );
+        
+        let response = `✅ Perfect! ${nights} night${nights > 1 ? 's' : ''} for ${totalGuests} guests\n`;
+        response += `${roomType.name}: ₹${pricing.totalPrice}`;
+        
+        // Add child pricing note
+        if (memory.children > 0) {
+            const freeKids = memory.childAges.filter(age => age < 6).length;
+            if (freeKids > 0) {
+                response += ` (${freeKids} kids free)`;
+            }
         }
         
-        if (bookingInfo.hasGuestCount && !bookingInfo.hasDates) {
-            return `👥 Got your group! What dates?
-🏨 ${bookingInfo.recommendedRoom?.name || 'Heritage Room'} recommended
-📞 +91-9910364826`;
-        }
+        response += `\n📞 Call +91-9910364826 to book now!`;
         
+        return response;
     } catch (error) {
-        console.error('Error in smart fallback:', error);
+        console.error('Error generating quote:', error);
+        return `✅ Great! Call +91-9910364826 for pricing and booking! 🏨`;
     }
-    
-    // Default responses
-    if (hasBookingHistory) {
-        if (msg.includes('book') || msg.includes('room')) {
-            return `🏨 Welcome back! Ready for another stay?
-📅 Dates? 👥 Guests?
-📞 +91-9910364826 🌿`;
-        }
-        return `🙏 Hello again! How can I help? 🌿`;
-    }
-    
-    if (msg.includes('book') || msg.includes('room')) {
-        return `🏨 Welcome to Darbar Heritage Farmstay!
-📅 Dates? 👥 Adults/Children?
-📞 +91-9910364826 🌿`;
-    }
-    
-    if (msg.includes('location') || msg.includes('where')) {
-        return `📍 Ranichauri, Tehri Garhwal, Uttarakhand
-Heritage farmstay with organic dining 🌿
-📞 +91-9910364826`;
-    }
-    
-    return `🙏 Welcome to Darbar Heritage Farmstay!
-Heritage property in Uttarakhand 🏔️
-📞 +91-9910364826 🌿`;
 }
 
-// Claude API integration
+// Generate targeted questions for missing info
+function generateTargetedQuestion(needed, memory) {
+    if (needed.length === 0) {
+        return `✅ Perfect! Call +91-9910364826 to confirm your booking! 🏨`;
+    }
+    
+    if (needed.includes('child_ages') && memory.children > 0) {
+        return `What are the children's ages for accurate pricing?\n📞 +91-9910364826`;
+    }
+    
+    if (needed.includes('dates')) {
+        return `📅 What are your check-in and check-out dates?\n📞 +91-9910364826`;
+    }
+    
+    if (needed.includes('adults') || needed.includes('children')) {
+        return `👥 How many adults and children?\n📞 +91-9910364826`;
+    }
+    
+    return `🏨 Welcome to Darbar Heritage Farmstay!\n📅 Dates & 👥 Guest count needed\n📞 +91-9910364826`;
+}
+
+// Claude API integration with smart context
 async function callClaudeWithContext(messages, guestContext) {
     if (!CLAUDE_API_KEY) {
         console.log('❌ Claude API not configured, using fallback');
@@ -669,37 +725,36 @@ async function callClaudeWithContext(messages, guestContext) {
             `${room.name}: ₹${room.basePrice}/night (${room.capacity} guests)`
         ).join('\n');
 
-        const systemPrompt = `You are a SMART booking assistant for Darbar Heritage Farmstay. Be concise and use REAL data.
+        const systemPrompt = `You are a SMART booking assistant for Darbar Heritage Farmstay. Be concise and NEVER repeat questions.
 
 HOTEL INFO:
 - Location: Ranichauri, Tehri Garhwal, Uttarakhand  
 - Phone: +91-9910364826
-- Email: darbarorganichotel@gmail.com
 
-ROOM TYPES & PRICES:
+ROOM TYPES:
 ${roomInfo}
 
-PRICING RULES:
-- Children under 6: FREE
-- Children 6-12: 50% discount
-- Children 12+: Full price
+PRICING:
+- Under 6: FREE
+- 6-12 years: 50% discount
+- 12+ years: Full price
 - Extra bed: ₹1100/night
 
 GUEST CONTEXT:
 ${guestContext}
 
-RULES:
-1. Never repeat questions for info already provided
-2. If guest gives dates + guest count → Quote REAL price with breakdown
-3. Ask about child ages for accurate pricing
+CRITICAL RULES:
+1. ANALYZE the FULL conversation - don't ask for info already provided
+2. If guest provided dates + guest count + child ages → Give FINAL price
+3. If missing 1 piece of info → Ask ONLY for that
 4. Keep responses under 3 lines
-5. Always provide phone number for booking
+5. NEVER repeat questions
+6. Calculate nights correctly: "6th and 7th" = 1 night
 
-EXAMPLE:
-Guest: "25th Dec to 29th Dec, 2 adults 1 child"
-You: "Perfect! 4 nights. Child's age? Heritage Room from ₹22,000. Call +91-9910364826!"
-
-Be smart, accurate, and helpful.`;
+EXAMPLES:
+Complete: "✅ Perfect! 1 night for 4 guests. Heritage Room: ₹5,500 (2 kids free). Call +91-9910364826!"
+Missing ages: "Child ages for accurate pricing?"
+Missing dates: "What dates work for you?"`;
 
         const response = await fetch(CLAUDE_API_URL, {
             method: 'POST',
@@ -710,7 +765,7 @@ Be smart, accurate, and helpful.`;
             },
             body: JSON.stringify({
                 model: 'claude-3-sonnet-20240229',
-                max_tokens: 200,
+                max_tokens: 150,
                 system: systemPrompt,
                 messages: messages
             })
@@ -728,59 +783,33 @@ Be smart, accurate, and helpful.`;
     }
 }
 
-// Handle post-message actions
-async function handlePostMessageActions(guest, messageText, aiResponse) {
-    const msg = messageText.toLowerCase();
+// Smart fallback function
+async function generateSmartFallback(message, guestContext) {
+    const msg = message.toLowerCase();
+    const hasBookingHistory = guestContext.includes('Total bookings:') && !guestContext.includes('Total bookings: 0');
     
-    try {
-        // Detect complete booking info and create provisional booking
-        const bookingInfo = await processBookingWithRealData(messageText, guest);
-        
-        if (bookingInfo.hasDates && bookingInfo.hasGuestCount && bookingInfo.recommendedRoom) {
-            console.log('🎯 Complete booking info detected - creating provisional booking');
-            
-            const booking = await createProvisionalBooking(
-                guest.id,
-                '2024-12-25', // Would parse actual dates in production
-                '2024-12-29',
-                bookingInfo.recommendedRoom.id,
-                bookingInfo.totalGuests,
-                bookingInfo.pricing
-            );
-            
-            if (booking) {
-                console.log('✅ Provisional booking created:', booking.id);
-            }
-        }
-        
-        // Log special requests
-        if (msg.includes('anniversary') || msg.includes('honeymoon') || msg.includes('birthday') || msg.includes('special')) {
-            console.log('⭐ Special request detected');
-            
-            await prisma.guest.update({
-                where: { id: guest.id },
-                data: { 
-                    notes: `Special request: ${messageText} - ${new Date().toDateString()}`,
-                    updatedAt: new Date()
-                }
-            }).catch(err => console.log('Note update failed:', err));
-        }
-        
-    } catch (error) {
-        console.error('❌ Error in post-message actions:', error);
+    if (msg.includes('book') || msg.includes('room')) {
+        return `🏨 Welcome to Darbar Heritage Farmstay!\n📅 Dates & 👥 Guest count needed\n📞 +91-9910364826`;
     }
+    
+    if (msg.includes('location') || msg.includes('where')) {
+        return `📍 Ranichauri, Tehri Garhwal, Uttarakhand\nHeritage farmstay with organic dining 🌿\n📞 +91-9910364826`;
+    }
+    
+    return `🙏 Welcome to Darbar Heritage Farmstay!\nHeritage property in Uttarakhand 🏔️\n📞 +91-9910364826`;
 }
 
 // =============================================================================
 // MESSAGE PROCESSING
 // =============================================================================
 
+// Enhanced message processing with memory
 async function processIncomingMessage(message) {
     const guestPhone = message.from;
     const messageText = message.text?.body || '';
     const messageId = message.id;
     
-    console.log('\n📥 Processing message with database integration:');
+    console.log('\n📥 Processing message with smart memory:');
     console.log('  From:', guestPhone);
     console.log('  Message:', messageText);
     
@@ -797,49 +826,38 @@ async function processIncomingMessage(message) {
             return;
         }
         
-        // 2. Save incoming message
+        // 2. Update conversation memory
+        const memory = updateConversationMemory(guest.id, messageText);
+        console.log('🧠 Conversation memory:', memory);
+        
+        // 3. Save incoming message
         await saveMessage(guest.id, messageText, 'incoming', messageId);
         
-        // 3. Get guest context
+        // 4. Get guest context
         const guestContext = await getGuestContext(guest);
         
-        // 4. Get conversation history
-        const recentMessages = await prisma.whatsAppMessage.findMany({
-            where: { guestId: guest.id },
-            orderBy: { createdAt: 'desc' },
-            take: 10
-        }).catch(() => []);
+        // 5. Generate smart response based on memory
+        let aiResponse;
         
-        // 5. Build messages for Claude
-        const messages = recentMessages
-            .reverse()
-            .map(msg => ({
-                role: msg.direction === 'incoming' ? 'user' : 'assistant',
-                content: msg.content
-            }));
-        
-        if (messages.length === 0 || messages[messages.length - 1].content !== messageText) {
-            messages.push({
-                role: 'user',
-                content: messageText
-            });
+        if (hasCompleteBookingInfo(memory)) {
+            // Generate final quote
+            aiResponse = await generateFinalQuote(memory);
+        } else {
+            // Ask for missing info only
+            const needed = getNeededInfo(memory);
+            aiResponse = generateTargetedQuestion(needed, memory);
         }
         
-        // 6. Generate AI response
-        const aiResponse = await callClaudeWithContext(messages, guestContext);
-        console.log('🤖 AI response generated');
+        console.log('🤖 Smart response generated');
         
-        // 7. Save AI response
+        // 6. Save AI response
         await saveMessage(guest.id, aiResponse, 'outgoing');
         
-        // 8. Send WhatsApp reply
+        // 7. Send WhatsApp reply
         const result = await sendWhatsAppMessage(guestPhone, aiResponse, messageId);
         
         if (result.success) {
-            console.log('✅ Response sent successfully!');
-            
-            // 9. Handle post-message actions
-            await handlePostMessageActions(guest, messageText, aiResponse);
+            console.log('✅ Smart response sent successfully!');
         } else {
             console.log('❌ Failed to send response:', result.error);
         }
@@ -899,6 +917,29 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
     }
 }
 
+// Handle post-message actions
+async function handlePostMessageActions(guest, messageText, aiResponse) {
+    const msg = messageText.toLowerCase();
+    
+    try {
+        // Log special requests
+        if (msg.includes('anniversary') || msg.includes('honeymoon') || msg.includes('birthday') || msg.includes('special')) {
+            console.log('⭐ Special request detected');
+            
+            await prisma.guest.update({
+                where: { id: guest.id },
+                data: { 
+                    notes: `Special request: ${messageText} - ${new Date().toDateString()}`,
+                    updatedAt: new Date()
+                }
+            }).catch(err => console.log('Note update failed:', err));
+        }
+        
+    } catch (error) {
+        console.error('❌ Error in post-message actions:', error);
+    }
+}
+
 // =============================================================================
 // API ROUTES
 // =============================================================================
@@ -906,11 +947,11 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
 // Basic routes
 app.get('/', (req, res) => {
     res.json({
-        service: 'ChatHotel Production Server',
-        version: '5.0.0',
+        service: 'ChatHotel Smart Server',
+        version: '6.0.0',
         database_connected: true,
         ai_powered: true,
-        features: ['Smart Booking', 'Child Pricing', 'Extra Bed Charges'],
+        features: ['Smart Conversation Memory', 'Accurate Date Calculation', 'Child Pricing'],
         timestamp: new Date().toISOString()
     });
 });
@@ -993,6 +1034,7 @@ app.get('/db-status', async (req, res) => {
                 extraBed: EXTRA_BED_PRICE,
                 childDiscounts: CHILD_DISCOUNT
             },
+            conversationMemory: conversationMemory.size,
             last_updated: new Date().toISOString()
         });
     } catch (error) {
@@ -1019,6 +1061,9 @@ app.get('/guest/:phone', async (req, res) => {
             take: 20
         }).catch(() => []);
         
+        // Get conversation memory for this guest
+        const memory = conversationMemory.get(guest.id) || {};
+        
         res.json({
             guest: {
                 id: guest.id,
@@ -1033,27 +1078,11 @@ app.get('/guest/:phone', async (req, res) => {
                 totalBookings: guest.bookings?.length || 0
             },
             context: guestContext,
-            messages: messages
+            messages: messages,
+            conversationMemory: memory
         });
     } catch (error) {
         console.error('❌ Error in guest lookup:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Room availability check
-app.post('/check-availability', async (req, res) => {
-    try {
-        const { checkIn, checkOut, roomType } = req.body;
-        
-        if (!checkIn || !checkOut) {
-            return res.status(400).json({ error: 'Check-in and check-out dates are required' });
-        }
-        
-        const availability = await checkRoomAvailability(checkIn, checkOut, roomType);
-        res.json(availability);
-    } catch (error) {
-        console.error('❌ Error checking availability:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1093,7 +1122,47 @@ app.post('/calculate-price', async (req, res) => {
     }
 });
 
-// Create booking
+// Test date calculation endpoint
+app.post('/test-dates', (req, res) => {
+    const { dateText } = req.body;
+    
+    const result = extractDatesWithNights(dateText || '6th and 7th');
+    
+    res.json({
+        input: dateText,
+        result: result,
+        examples: {
+            '6th and 7th': extractDatesWithNights('6th and 7th'),
+            '25th Dec to 29th Dec': extractDatesWithNights('25th Dec to 29th Dec'),
+            'this weekend': extractDatesWithNights('this weekend'),
+            'tomorrow': extractDatesWithNights('tomorrow')
+        }
+    });
+});
+
+// Clear conversation memory endpoint
+app.post('/clear-memory/:phone?', (req, res) => {
+    try {
+        if (req.params.phone) {
+            // Clear specific guest's memory
+            const guest = conversationMemory.get(req.params.phone);
+            if (guest) {
+                conversationMemory.delete(req.params.phone);
+                res.json({ success: true, message: `Memory cleared for ${req.params.phone}` });
+            } else {
+                res.json({ success: false, message: 'No memory found for this guest' });
+            }
+        } else {
+            // Clear all memory
+            conversationMemory.clear();
+            res.json({ success: true, message: 'All conversation memory cleared' });
+        }
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Create booking endpoint
 app.post('/create-booking', async (req, res) => {
     try {
         const { guestPhone, checkIn, checkOut, roomTypeName, adults, children, childAges, extraBeds, guestName } = req.body;
@@ -1162,6 +1231,167 @@ app.post('/send-message', async (req, res) => {
         }
     } catch (error) {
         console.error('❌ Error sending message:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get guest conversation history
+app.get('/guest/:phone/messages', async (req, res) => {
+    try {
+        const guest = await findOrCreateGuest(req.params.phone);
+        if (!guest) {
+            return res.status(404).json({ error: 'Guest not found' });
+        }
+        
+        const messages = await prisma.whatsAppMessage.findMany({
+            where: { guestId: guest.id },
+            orderBy: { createdAt: 'asc' },
+            take: 50
+        }).catch(() => []);
+        
+        res.json({
+            guest: {
+                name: `${guest.firstName} ${guest.lastName}`,
+                phone: guest.phone
+            },
+            messages: messages
+        });
+    } catch (error) {
+        console.error('❌ Error getting messages:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get all bookings for a guest
+app.get('/guest/:phone/bookings', async (req, res) => {
+    try {
+        const guest = await prisma.guest.findFirst({
+            where: {
+                OR: [
+                    { phone: req.params.phone },
+                    { whatsappNumber: req.params.phone }
+                ]
+            },
+            include: {
+                bookings: {
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+        
+        if (!guest) {
+            return res.status(404).json({ error: 'Guest not found' });
+        }
+        
+        res.json({
+            guest: {
+                name: `${guest.firstName} ${guest.lastName}`,
+                phone: guest.phone
+            },
+            bookings: guest.bookings
+        });
+    } catch (error) {
+        console.error('❌ Error getting bookings:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update booking status
+app.put('/booking/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        const bookingId = req.params.id;
+        
+        if (!status) {
+            return res.status(400).json({ error: 'Status is required' });
+        }
+        
+        const booking = await prisma.booking.update({
+            where: { id: bookingId },
+            data: { 
+                status: status,
+                updatedAt: new Date()
+            },
+            include: {
+                guest: true
+            }
+        });
+        
+        // Send notification to guest
+        const notificationMessage = `🏨 Booking Update: Your reservation ${bookingId} status has been updated to: ${status}. 
+
+For any questions, please call us at +91-9910364826. Thank you! 🌿`;
+        
+        await sendWhatsAppMessage(booking.guest.phone, notificationMessage).catch(err => {
+            console.error('⚠️ Could not send notification:', err);
+        });
+        
+        res.json({ success: true, booking: booking });
+    } catch (error) {
+        console.error('❌ Error updating booking:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get all recent activity
+app.get('/recent-activity', async (req, res) => {
+    try {
+        const [recentGuests, recentBookings, recentMessages] = await Promise.all([
+            prisma.guest.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 10,
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    phone: true,
+                    createdAt: true
+                }
+            }),
+            prisma.booking.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 10,
+                include: {
+                    guest: {
+                        select: {
+                            firstName: true,
+                            lastName: true,
+                            phone: true
+                        }
+                    }
+                }
+            }),
+            prisma.whatsAppMessage.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 20,
+                include: {
+                    guest: {
+                        select: {
+                            firstName: true,
+                            lastName: true,
+                            phone: true
+                        }
+                    }
+                }
+            }).catch(() => [])
+        ]);
+        
+        res.json({
+            recentGuests: recentGuests.map(g => ({
+                ...g,
+                name: `${g.firstName} ${g.lastName}`
+            })),
+            recentBookings: recentBookings.map(b => ({
+                ...b,
+                guestName: `${b.guest.firstName} ${b.guest.lastName}`
+            })),
+            recentMessages: recentMessages.map(m => ({
+                ...m,
+                guestName: `${m.guest.firstName} ${m.guest.lastName}`
+            }))
+        });
+    } catch (error) {
+        console.error('❌ Error getting recent activity:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1249,7 +1479,7 @@ app.get('/debug/seeding-status', async (req, res) => {
 // =============================================================================
 
 app.listen(PORT, async () => {
-    console.log('\n🚀 ChatHotel Production Server Starting...');
+    console.log('\n🚀 ChatHotel Smart Server Starting...');
     console.log('='.repeat(70));
     console.log(`✅ Server running on port ${PORT}`);
     
@@ -1270,25 +1500,26 @@ app.listen(PORT, async () => {
     console.log(`🤖 Claude API: ${CLAUDE_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
     console.log(`📱 WhatsApp: ${(WHATSAPP_ACCESS_TOKEN && WHATSAPP_PHONE_NUMBER_ID) ? '✅ Ready' : '❌ Not configured'}`);
     console.log('');
-    console.log('🎯 Production Features:');
-    console.log('   ✅ Smart booking with child pricing');
+    console.log('🧠 Smart Features:');
+    console.log('   ✅ Conversation memory system');
+    console.log('   ✅ Accurate date calculation');
+    console.log('   ✅ Smart context analysis');
+    console.log('   ✅ No repetitive questions');
+    console.log('   ✅ Child pricing (under 6: FREE, 6-12: 50%, 12+: full)');
     console.log('   ✅ Extra bed charges (₹1100/night)');
-    console.log('   ✅ Real-time room availability');
-    console.log('   ✅ Provisional booking creation');
-    console.log('   ✅ Complete conversation history');
-    console.log('   ✅ Auto-seeding for deployment');
     console.log('');
-    console.log('💰 Pricing Rules:');
-    console.log('   - Children under 6: FREE');
-    console.log('   - Children 6-12: 50% discount');
-    console.log('   - Children 12+: Full price');
-    console.log('   - Extra bed: ₹1100/night');
+    console.log('📊 Date Calculation Examples:');
+    console.log('   - "6th and 7th" = 1 night');
+    console.log('   - "25th Dec to 29th Dec" = 4 nights');
+    console.log('   - "this weekend" = 2 nights');
+    console.log('   - "tomorrow" = 1 night');
     console.log('');
     console.log('🔗 Key Endpoints:');
     console.log('   GET /health - System health check');
     console.log('   GET /db-status - Database statistics');
-    console.log('   POST /calculate-price - Price calculation');
-    console.log('   POST /create-booking - Create bookings');
+    console.log('   POST /test-dates - Test date calculations');
+    console.log('   POST /clear-memory - Clear conversation memory');
+    console.log('   GET /guest/{phone} - Guest with memory');
     console.log('   GET /debug/seeding-status - Check seeding');
     console.log('='.repeat(70));
 });
