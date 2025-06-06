@@ -1,4 +1,4 @@
-// ChatHotel Server - Integrated with Your Database Schema
+// ChatHotel Server - Complete Robust Database Integration with ALL Functions
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -13,16 +13,16 @@ const prisma = new PrismaClient({
         db: {
             url: process.env.DATABASE_URL
         }
-    }
+    },
+    log: ['error', 'warn'], // Add logging for debugging
 });
 
-// WhatsApp Configuration
+// Constants
+const HOTEL_ID = 'cmb7fuyga0000pkwov3o8hm4g'; // Darbar Heritage Farmstay ID
 const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_BUSINESS_ACCOUNT_ID = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
 const WHATSAPP_WEBHOOK_VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'chathotelwhatsapp';
-
-// Claude API Configuration
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const CLAUDE_API_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -41,13 +41,35 @@ app.use((req, res, next) => {
     }
 });
 
-// Database Helper Functions
-// Fixed Database Helper Function
+// Database Schema Validation Helper
+async function validateDatabaseSchema() {
+    try {
+        console.log('🔍 Validating database schema...');
+        
+        // Test basic table access
+        await prisma.hotel.findFirst();
+        await prisma.guest.findFirst();
+        await prisma.booking.findFirst();
+        
+        // Try to access WhatsApp messages (might not exist)
+        try {
+            await prisma.whatsAppMessage.findFirst();
+            console.log('✅ WhatsAppMessage table exists');
+        } catch (error) {
+            console.log('⚠️ WhatsAppMessage table not found, will use fallback');
+        }
+        
+        console.log('✅ Database schema validation passed');
+        return true;
+    } catch (error) {
+        console.error('❌ Database schema validation failed:', error.message);
+        return false;
+    }
+}
+
+// Fixed Database Helper Functions
 async function findOrCreateGuest(phoneNumber, name = null) {
     console.log('🔍 Looking up guest:', phoneNumber);
-
-    // Your hotel ID (from the booking creation function)
-    const HOTEL_ID = 'cmb7fuyga0000pkwov3o8hm4g';
 
     try {
         let guest = await prisma.guest.findFirst({
@@ -55,7 +77,10 @@ async function findOrCreateGuest(phoneNumber, name = null) {
                 OR: [
                     { phone: phoneNumber },
                     { phone: phoneNumber.replace(/\D/g, '') },
-                    { phone: `+${phoneNumber}` }
+                    { phone: `+${phoneNumber}` },
+                    { whatsappNumber: phoneNumber },
+                    { whatsappNumber: phoneNumber.replace(/\D/g, '') },
+                    { whatsappNumber: `+${phoneNumber}` }
                 ]
             },
             include: {
@@ -69,20 +94,22 @@ async function findOrCreateGuest(phoneNumber, name = null) {
         if (!guest) {
             console.log('👤 Creating new guest profile');
 
-            // Generate fallback name
             const nameSuffix = phoneNumber.slice(-4);
             const fallbackName = name || `Guest ${nameSuffix}`;
+            const nameParts = fallbackName.split(' ');
+            const firstName = nameParts[0] || 'Guest';
+            const lastName = nameParts.slice(1).join(' ') || nameSuffix;
 
             guest = await prisma.guest.create({
                 data: {
                     phone: phoneNumber,
-                    name: fallbackName,
+                    whatsappNumber: phoneNumber,
+                    firstName: firstName,
+                    lastName: lastName,
                     email: null,
-                    firstName: fallbackName,
-                    lastName: '—',
-                    createdAt: new Date(),
-                    updatedAt: new Date(),
-                    // Connect to the existing hotel
+                    vipStatus: false,
+                    blacklisted: false,
+                    preferences: {},
                     hotel: {
                         connect: {
                             id: HOTEL_ID
@@ -93,8 +120,10 @@ async function findOrCreateGuest(phoneNumber, name = null) {
                     bookings: true,
                 },
             });
+            
+            console.log('✅ Created new guest:', firstName, lastName);
         } else {
-            console.log('✅ Found existing guest:', guest.name);
+            console.log('✅ Found existing guest:', guest.firstName, guest.lastName);
             await prisma.guest.update({
                 where: { id: guest.id },
                 data: { updatedAt: new Date() }
@@ -104,21 +133,25 @@ async function findOrCreateGuest(phoneNumber, name = null) {
         return guest;
     } catch (error) {
         console.error('❌ Database error finding/creating guest:', error);
+        console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            meta: error.meta
+        });
         return null;
     }
 }
-
 
 async function saveMessage(guestId, messageText, direction = 'incoming', messageId = null) {
     console.log('💾 Saving message to database');
     
     try {
-        const message = await prisma.message.create({
+        // Try WhatsAppMessage table first
+        const message = await prisma.whatsAppMessage.create({
             data: {
                 guestId: guestId,
                 content: messageText,
-                direction: direction, // 'incoming' or 'outgoing'
-                platform: 'whatsapp',
+                direction: direction,
                 messageId: messageId,
                 createdAt: new Date()
             }
@@ -127,42 +160,67 @@ async function saveMessage(guestId, messageText, direction = 'incoming', message
         console.log('✅ Message saved with ID:', message.id);
         return message;
     } catch (error) {
-        console.error('❌ Error saving message:', error);
-        return null;
+        console.error('❌ Error saving to WhatsAppMessage:', error.message);
+        
+        // Fallback: try without messageId
+        try {
+            const message = await prisma.whatsAppMessage.create({
+                data: {
+                    guestId: guestId,
+                    content: messageText,
+                    direction: direction,
+                    createdAt: new Date()
+                }
+            });
+            
+            console.log('✅ Message saved (no messageId) with ID:', message.id);
+            return message;
+        } catch (fallbackError) {
+            console.error('❌ All message save attempts failed');
+            return null;
+        }
     }
 }
 
 async function getGuestContext(guest) {
     console.log('📋 Building guest context from database');
     
-    if (!guest) return '';
+    if (!guest) return 'No guest information available.';
     
     const recentBookings = guest.bookings || [];
     const hasActiveBooking = recentBookings.some(booking => 
         booking.status === 'confirmed' || booking.status === 'checked_in'
     );
     
+    const fullName = `${guest.firstName} ${guest.lastName}`.trim();
+    
     let context = `Guest Information:
-- Name: ${guest.name}
+- Name: ${fullName}
 - Phone: ${guest.phone}
+- WhatsApp: ${guest.whatsappNumber || guest.phone}
 - Email: ${guest.email || 'Not provided'}
+- VIP Status: ${guest.vipStatus ? 'Yes' : 'No'}
 - Total bookings: ${recentBookings.length}`;
 
     if (hasActiveBooking) {
         const activeBooking = recentBookings.find(b => b.status === 'confirmed' || b.status === 'checked_in');
         context += `
 - ACTIVE BOOKING: ${activeBooking.id}
-- Check-in: ${activeBooking.checkIn}
-- Check-out: ${activeBooking.checkOut}
-- Room: ${activeBooking.roomType}
+- Check-in: ${activeBooking.checkIn.toDateString()}
+- Check-out: ${activeBooking.checkOut.toDateString()}
+- Guests: ${activeBooking.guests}
 - Status: ${activeBooking.status}`;
+        
+        if (activeBooking.totalAmount) {
+            context += `\n- Amount: ₹${activeBooking.totalAmount}`;
+        }
     }
 
-    if (recentBookings.length > 0) {
+    if (recentBookings.length > 0 && !hasActiveBooking) {
         const lastBooking = recentBookings[0];
         context += `
-- Last stay: ${lastBooking.checkIn} to ${lastBooking.checkOut}
-- Previous room: ${lastBooking.roomType}`;
+- Last stay: ${lastBooking.checkIn.toDateString()} to ${lastBooking.checkOut.toDateString()}
+- Previous status: ${lastBooking.status}`;
     }
 
     return context;
@@ -172,29 +230,33 @@ async function checkRoomAvailability(checkIn, checkOut, roomType = null) {
     console.log('🏨 Checking room availability');
     
     try {
+        const checkInDate = new Date(checkIn);
+        const checkOutDate = new Date(checkOut);
+        
         // Get all bookings that overlap with requested dates
         const overlappingBookings = await prisma.booking.findMany({
             where: {
                 AND: [
+                    { hotelId: HOTEL_ID },
                     { status: { in: ['confirmed', 'checked_in'] } },
                     {
                         OR: [
                             {
                                 AND: [
-                                    { checkIn: { lte: new Date(checkIn) } },
-                                    { checkOut: { gt: new Date(checkIn) } }
+                                    { checkIn: { lte: checkInDate } },
+                                    { checkOut: { gt: checkInDate } }
                                 ]
                             },
                             {
                                 AND: [
-                                    { checkIn: { lt: new Date(checkOut) } },
-                                    { checkOut: { gte: new Date(checkOut) } }
+                                    { checkIn: { lt: checkOutDate } },
+                                    { checkOut: { gte: checkOutDate } }
                                 ]
                             },
                             {
                                 AND: [
-                                    { checkIn: { gte: new Date(checkIn) } },
-                                    { checkOut: { lte: new Date(checkOut) } }
+                                    { checkIn: { gte: checkInDate } },
+                                    { checkOut: { lte: checkOutDate } }
                                 ]
                             }
                         ]
@@ -229,7 +291,7 @@ async function createProvisionalBooking(guestId, checkIn, checkOut, roomType, gu
         const booking = await prisma.booking.create({
             data: {
                 guestId: guestId,
-                hotelId: 'cmb7fuyga0000pkwov3o8hm4g', // Your Darbar hotel ID from the doc
+                hotelId: HOTEL_ID, // Your Darbar hotel ID from the doc
                 checkIn: new Date(checkIn),
                 checkOut: new Date(checkOut),
                 roomType: roomType || 'Standard',
@@ -385,11 +447,11 @@ async function processIncomingMessage(message) {
         const guestContext = await getGuestContext(guest);
         
         // 4. Get recent conversation history
-        const recentMessages = await prisma.message.findMany({
+        const recentMessages = await prisma.whatsAppMessage.findMany({
             where: { guestId: guest.id },
             orderBy: { createdAt: 'desc' },
             take: 10
-        });
+        }).catch(() => []);
         
         // 5. Build messages for Claude
         const messages = recentMessages
@@ -455,7 +517,7 @@ async function sendWhatsAppMessage(to, message, contextMessageId = null) {
     
     if (!WHATSAPP_ACCESS_TOKEN || !WHATSAPP_PHONE_NUMBER_ID) {
         console.log('❌ WhatsApp credentials missing');
-        return false;
+        return { success: false, error: 'WhatsApp not configured' };
     }
     
     const url = `https://graph.facebook.com/v19.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
@@ -524,7 +586,13 @@ app.get('/db-status', async (req, res) => {
     try {
         const guestCount = await prisma.guest.count();
         const bookingCount = await prisma.booking.count();
-        const messageCount = await prisma.message.count();
+        
+        let messageCount = 0;
+        try {
+            messageCount = await prisma.whatsAppMessage.count();
+        } catch (error) {
+            console.log('⚠️ WhatsAppMessage table not accessible');
+        }
         
         res.json({
             database: 'Connected',
@@ -550,11 +618,11 @@ app.get('/guest/:phone', async (req, res) => {
         res.json({
             guest: guest,
             context: guestContext,
-            messages: await prisma.message.findMany({
+            messages: await prisma.whatsAppMessage.findMany({
                 where: { guestId: guest?.id },
                 orderBy: { createdAt: 'desc' },
                 take: 20
-            })
+            }).catch(() => [])
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -595,6 +663,254 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+// Additional API endpoints for hotel management
+
+// Check room availability endpoint
+app.post('/check-availability', async (req, res) => {
+    try {
+        const { checkIn, checkOut, roomType } = req.body;
+        
+        if (!checkIn || !checkOut) {
+            return res.status(400).json({ error: 'Check-in and check-out dates are required' });
+        }
+        
+        const availability = await checkRoomAvailability(checkIn, checkOut, roomType);
+        res.json(availability);
+    } catch (error) {
+        console.error('❌ Error checking availability:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Create booking endpoint
+app.post('/create-booking', async (req, res) => {
+    try {
+        const { guestPhone, checkIn, checkOut, roomType, guests, guestName } = req.body;
+        
+        if (!guestPhone || !checkIn || !checkOut) {
+            return res.status(400).json({ error: 'Guest phone, check-in, and check-out are required' });
+        }
+        
+        // Find or create guest
+        const guest = await findOrCreateGuest(guestPhone, guestName);
+        if (!guest) {
+            return res.status(500).json({ error: 'Could not create guest profile' });
+        }
+        
+        // Create provisional booking
+        const booking = await createProvisionalBooking(guest.id, checkIn, checkOut, roomType, guests);
+        if (!booking) {
+            return res.status(500).json({ error: 'Could not create booking' });
+        }
+        
+        res.json({
+            success: true,
+            booking: booking,
+            guest: {
+                id: guest.id,
+                name: `${guest.firstName} ${guest.lastName}`,
+                phone: guest.phone
+            }
+        });
+    } catch (error) {
+        console.error('❌ Error creating booking:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Send message to guest endpoint
+app.post('/send-message', async (req, res) => {
+    try {
+        const { phone, message } = req.body;
+        
+        if (!phone || !message) {
+            return res.status(400).json({ error: 'Phone and message are required' });
+        }
+        
+        const result = await sendWhatsAppMessage(phone, message);
+        
+        if (result.success) {
+            // Try to save the outgoing message to database
+            try {
+                const guest = await findOrCreateGuest(phone);
+                if (guest) {
+                    await saveMessage(guest.id, message, 'outgoing', result.messageId);
+                }
+            } catch (saveError) {
+                console.error('⚠️ Could not save outgoing message:', saveError);
+            }
+            
+            res.json({ success: true, messageId: result.messageId });
+        } else {
+            res.status(500).json({ success: false, error: result.error });
+        }
+    } catch (error) {
+        console.error('❌ Error sending message:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get guest conversation history
+app.get('/guest/:phone/messages', async (req, res) => {
+    try {
+        const guest = await findOrCreateGuest(req.params.phone);
+        if (!guest) {
+            return res.status(404).json({ error: 'Guest not found' });
+        }
+        
+        const messages = await prisma.whatsAppMessage.findMany({
+            where: { guestId: guest.id },
+            orderBy: { createdAt: 'asc' },
+            take: 50
+        }).catch(() => []);
+        
+        res.json({
+            guest: {
+                name: `${guest.firstName} ${guest.lastName}`,
+                phone: guest.phone
+            },
+            messages: messages
+        });
+    } catch (error) {
+        console.error('❌ Error getting messages:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get all bookings for a guest
+app.get('/guest/:phone/bookings', async (req, res) => {
+    try {
+        const guest = await prisma.guest.findFirst({
+            where: {
+                OR: [
+                    { phone: req.params.phone },
+                    { whatsappNumber: req.params.phone }
+                ]
+            },
+            include: {
+                bookings: {
+                    orderBy: { createdAt: 'desc' }
+                }
+            }
+        });
+        
+        if (!guest) {
+            return res.status(404).json({ error: 'Guest not found' });
+        }
+        
+        res.json({
+            guest: {
+                name: `${guest.firstName} ${guest.lastName}`,
+                phone: guest.phone
+            },
+            bookings: guest.bookings
+        });
+    } catch (error) {
+        console.error('❌ Error getting bookings:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update booking status
+app.put('/booking/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        const bookingId = req.params.id;
+        
+        if (!status) {
+            return res.status(400).json({ error: 'Status is required' });
+        }
+        
+        const booking = await prisma.booking.update({
+            where: { id: bookingId },
+            data: { 
+                status: status,
+                updatedAt: new Date()
+            },
+            include: {
+                guest: true
+            }
+        });
+        
+        // Send notification to guest
+        const notificationMessage = `🏨 Booking Update: Your reservation ${bookingId} status has been updated to: ${status}. 
+
+For any questions, please call us at +91-9910364826. Thank you! 🌿`;
+        
+        await sendWhatsAppMessage(booking.guest.phone, notificationMessage).catch(err => {
+            console.error('⚠️ Could not send notification:', err);
+        });
+        
+        res.json({ success: true, booking: booking });
+    } catch (error) {
+        console.error('❌ Error updating booking:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get all recent activity
+app.get('/recent-activity', async (req, res) => {
+    try {
+        const [recentGuests, recentBookings, recentMessages] = await Promise.all([
+            prisma.guest.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 10,
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    phone: true,
+                    createdAt: true
+                }
+            }),
+            prisma.booking.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 10,
+                include: {
+                    guest: {
+                        select: {
+                            firstName: true,
+                            lastName: true,
+                            phone: true
+                        }
+                    }
+                }
+            }),
+            prisma.whatsAppMessage.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 20,
+                include: {
+                    guest: {
+                        select: {
+                            firstName: true,
+                            lastName: true,
+                            phone: true
+                        }
+                    }
+                }
+            }).catch(() => [])
+        ]);
+        
+        res.json({
+            recentGuests: recentGuests.map(g => ({
+                ...g,
+                name: `${g.firstName} ${g.lastName}`
+            })),
+            recentBookings: recentBookings.map(b => ({
+                ...b,
+                guestName: `${b.guest.firstName} ${b.guest.lastName}`
+            })),
+            recentMessages: recentMessages.map(m => ({
+                ...m,
+                guestName: `${m.guest.firstName} ${m.guest.lastName}`
+            }))
+        });
+    } catch (error) {
+        console.error('❌ Error getting recent activity:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Server startup
 app.listen(PORT, async () => {
     console.log('\n🚀 ChatHotel Database-Integrated AI Starting...');
@@ -605,6 +921,11 @@ app.listen(PORT, async () => {
     try {
         await prisma.$connect();
         console.log('✅ Database connected successfully');
+        
+        const schemaValid = await validateDatabaseSchema();
+        if (schemaValid) {
+            console.log('✅ Database schema validation passed');
+        }
         
         const stats = await prisma.guest.count();
         console.log(`📊 Database stats: ${stats} guests registered`);
@@ -621,10 +942,18 @@ app.listen(PORT, async () => {
     console.log('   ✅ Room availability checking');
     console.log('   ✅ Provisional booking creation');
     console.log('   ✅ AI responses with guest context');
+    console.log('   ✅ Complete hotel management API');
     console.log('');
     console.log('🔗 Endpoints:');
     console.log('   GET /db-status - Database statistics');
     console.log('   GET /guest/{phone} - Guest profile lookup');
+    console.log('   GET /guest/{phone}/messages - Guest conversation history');
+    console.log('   GET /guest/{phone}/bookings - Guest booking history');
+    console.log('   GET /recent-activity - Recent system activity');
+    console.log('   POST /check-availability - Check room availability');
+    console.log('   POST /create-booking - Create new booking');
+    console.log('   POST /send-message - Send WhatsApp message');
+    console.log('   PUT /booking/{id}/status - Update booking status');
     console.log('='.repeat(60));
 });
 
@@ -633,4 +962,13 @@ process.on('SIGINT', async () => {
     console.log('\n🔄 Shutting down...');
     await prisma.$disconnect();
     process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
