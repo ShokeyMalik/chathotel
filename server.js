@@ -44,6 +44,7 @@ app.use((req, res, next) => {
 // Database Helper Functions
 async function findOrCreateGuest(phoneNumber, name = null) {
     console.log('🔍 Looking up guest:', phoneNumber);
+
     try {
         let guest = await prisma.guest.findFirst({
             where: {
@@ -63,18 +64,24 @@ async function findOrCreateGuest(phoneNumber, name = null) {
 
         if (!guest) {
             console.log('👤 Creating new guest profile');
+
+            // Generate fallback name
+            const nameSuffix = phoneNumber.slice(-4);
+            const fallbackName = name || `Guest ${nameSuffix}`;
+
             guest = await prisma.guest.create({
                 data: {
                     phone: phoneNumber,
-                    name: name || `Guest ${phoneNumber.slice(-4)}`,
+                    name: fallbackName,
                     email: null,
-                    firstName: 'Guest',
+                    firstName: fallbackName,
+                    lastName: '—',
                     createdAt: new Date(),
                     updatedAt: new Date(),
                 },
                 include: {
                     bookings: true,
-                }
+                },
             });
         } else {
             console.log('✅ Found existing guest:', guest.name);
@@ -90,6 +97,7 @@ async function findOrCreateGuest(phoneNumber, name = null) {
         return null;
     }
 }
+
 
 async function saveMessage(guestId, messageText, direction = 'incoming', messageId = null) {
     console.log('💾 Saving message to database');
