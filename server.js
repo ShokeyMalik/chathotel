@@ -510,43 +510,47 @@ function calculateRoomRate(roomType, checkIn, checkOut) {
 }
 
 // Real Claude API call with guest context
+// Updated Claude API call with accurate and concise prompting
 async function callClaudeWithContext(messages, guestContext) {
     if (!CLAUDE_API_KEY) {
         console.log('❌ Claude API not configured, using fallback');
         return generateIntelligentFallback(messages[messages.length - 1].content, guestContext);
     }
 
-    const systemPrompt = `You are an AI assistant for Darbar Heritage Farmstay. You have access to guest data and can perform hotel operations.
+    const systemPrompt = `You are a WhatsApp assistant for Darbar Heritage Farmstay. Keep responses SHORT and helpful.
 
-HOTEL INFORMATION:
+ACCURATE HOTEL INFO:
 - Name: Darbar Heritage Farmstay
+- Location: Ranichauri, Tehri Garhwal, UTTARAKHAND (NOT Haryana!)
 - Phone: +91-9910364826
 - Email: darbarorganichotel@gmail.com
-- Rooms: 13 heritage rooms
-- Specialty: Organic farm-to-table dining
+- 13 heritage rooms: Family Suites, Heritage Rooms, Green Chalets
+- Organic farm-to-table dining
+- Heritage property with traditional Garhwali architecture
 
 GUEST CONTEXT:
 ${guestContext}
 
-CAPABILITIES:
-- Access guest booking history
-- Check room availability  
-- Create provisional bookings
-- Answer questions about the property
-- Handle special requests
+RESPONSE RULES:
+- Keep under 3 lines for WhatsApp
+- Be warm but brief
+- Use 1-2 relevant emojis max
+- For bookings: ask dates + guest count
+- Never mention Haryana or wrong location
+- Always mention Uttarakhand if asked about location
+- Phone number for urgent needs: +91-9910364826
 
-INSTRUCTIONS:
-- Be warm, personal, and knowledgeable
-- Use guest's previous booking history when relevant
-- For new bookings, ask for dates and guest count
-- Create provisional bookings when guests provide details
-- Use emojis appropriately (🏨 🌿 🍽️ etc.)
-- Always provide actionable next steps
+EXAMPLES:
+Guest asks about location: "We're in Ranichauri, Tehri Garhwal, Uttarakhand 🏔️ Beautiful heritage farmstay with organic dining!"
 
-Remember: You can see this guest's actual booking history and current status.`;
+Guest says hello: "Hello! Welcome to Darbar Heritage Farmstay 🌿 How can I help with your stay or booking?"
+
+Guest asks about booking: "Perfect! Please share your check-in/check-out dates and number of guests. I'll check availability! 📅"
+
+Remember: SHORT responses, ACCURATE location (Uttarakhand), helpful but concise.`;
 
     try {
-        console.log('🤖 Calling Claude API with guest context...');
+        console.log('🤖 Calling Claude API with improved prompt...');
         
         const response = await fetch(CLAUDE_API_URL, {
             method: 'POST',
@@ -557,7 +561,7 @@ Remember: You can see this guest's actual booking history and current status.`;
             },
             body: JSON.stringify({
                 model: 'claude-3-sonnet-20240229',
-                max_tokens: 400,
+                max_tokens: 150, // Reduced from 400 to force shorter responses
                 system: systemPrompt,
                 messages: messages
             })
@@ -575,37 +579,50 @@ Remember: You can see this guest's actual booking history and current status.`;
     }
 }
 
+// Updated fallback with correct info and shorter responses
 function generateIntelligentFallback(message, guestContext) {
     const msg = message.toLowerCase();
     const hasBookingHistory = guestContext.includes('Total bookings:') && !guestContext.includes('Total bookings: 0');
     
     if (hasBookingHistory) {
         if (msg.includes('book') || msg.includes('room')) {
-            return `🏨 Welcome back! I see you've stayed with us before. For your next booking at Darbar Heritage Farmstay, could you please share:
+            return `🏨 Welcome back! Ready for another stay?
 
-📅 Your preferred check-in and check-out dates
-👥 Number of guests
-🛏️ Any room preferences
+📅 Check-in/out dates?
+👥 Number of guests?
 
-I'll check our availability immediately! You can also call us at +91-9910364826 for instant confirmation. 🌿`;
+Call: +91-9910364826 🌿`;
         }
         
-        return `🙏 Hello again! It's wonderful to hear from a returning guest of Darbar Heritage Farmstay. How can I assist you today? Whether it's a new booking, questions about our farm, or anything else, I'm here to help! 🌿`;
+        return `🙏 Hello again! How can I help you today? Booking, info, or questions? 🌿`;
     }
     
-    // New guest fallback
+    // New guest responses
     if (msg.includes('book') || msg.includes('room')) {
-        return `🏨 Welcome to Darbar Heritage Farmstay! I'd be delighted to help you plan your countryside retreat.
+        return `🏨 Welcome to Darbar Heritage Farmstay!
 
-To check availability and create your booking:
-📅 What dates are you considering?
+📅 What dates?
 👥 How many guests?
-🌟 Any special preferences?
 
-Our heritage property offers 13 unique rooms with organic farm experiences. Call +91-9910364826 for immediate assistance! 🌿`;
+Call: +91-9910364826 🌿`;
     }
     
-    return `🙏 Welcome to Darbar Heritage Farmstay! I'm here to help with bookings, information about our heritage property, organic farm experiences, and any questions you might have. How can I assist you today? 🌿`;
+    if (msg.includes('location') || msg.includes('where')) {
+        return `📍 Ranichauri, Tehri Garhwal, Uttarakhand
+Heritage farmstay with organic dining 🌿
+Call: +91-9910364826`;
+    }
+    
+    if (msg.includes('info') || msg.includes('about') || msg.includes('tell me')) {
+        return `🏔️ Darbar Heritage Farmstay, Uttarakhand
+✨ 13 heritage rooms & chalets
+🍽️ Organic farm-to-table dining
+📞 +91-9910364826`;
+    }
+    
+    return `🙏 Welcome to Darbar Heritage Farmstay!
+Heritage property in Uttarakhand 🏔️
+How can I help? Call: +91-9910364826 🌿`;
 }
 
 // Enhanced message processing with database integration
