@@ -66,17 +66,19 @@ async function findOrCreateGuest(phoneNumber, name = null) {
         if (!guest) {
             console.log('👤 Creating new guest profile');
             guest = await prisma.guest.create({
-                data: {
-                    phone: phoneNumber,
-                    name: name || `Guest ${phoneNumber.slice(-4)}`,
-                    email: null,
-                    createdAt: new Date(),
-                    updatedAt: new Date()
-                },
-                include: {
-                    bookings: true
-                }
-            });
+            data: {
+                phone,
+                name,
+                email: null,
+                firstName: "Guest",
+                createdAt: new Date(),
+                updatedAt: new Date(),
+            },
+            include: {
+                bookings: true,
+            },
+        });
+
         } else {
             console.log('✅ Found existing guest:', guest.name);
             // Update last contact
