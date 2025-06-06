@@ -44,14 +44,12 @@ app.use((req, res, next) => {
 // Database Helper Functions
 async function findOrCreateGuest(phoneNumber, name = null) {
     console.log('🔍 Looking up guest:', phoneNumber);
-    
     try {
-        // Try to find existing guest
         let guest = await prisma.guest.findFirst({
             where: {
                 OR: [
                     { phone: phoneNumber },
-                    { phone: phoneNumber.replace(/\D/g, '') }, // Remove non-digits
+                    { phone: phoneNumber.replace(/\D/g, '') },
                     { phone: `+${phoneNumber}` }
                 ]
             },
@@ -66,22 +64,20 @@ async function findOrCreateGuest(phoneNumber, name = null) {
         if (!guest) {
             console.log('👤 Creating new guest profile');
             guest = await prisma.guest.create({
-            data: {
-                phone,
-                name,
-                email: null,
-                firstName: "Guest",
-                createdAt: new Date(),
-                updatedAt: new Date(),
-            },
-            include: {
-                bookings: true,
-            },
-        });
-
+                data: {
+                    phone: phoneNumber,
+                    name: name || `Guest ${phoneNumber.slice(-4)}`,
+                    email: null,
+                    firstName: 'Guest',
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                },
+                include: {
+                    bookings: true,
+                }
+            });
         } else {
             console.log('✅ Found existing guest:', guest.name);
-            // Update last contact
             await prisma.guest.update({
                 where: { id: guest.id },
                 data: { updatedAt: new Date() }
