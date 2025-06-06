@@ -1,123 +1,174 @@
-// packages/database/src/seed.ts
-
-import { PrismaClient } from '@prisma/client';
-
+import { PrismaClient, Prisma } from '@prisma/client';
 const prisma = new PrismaClient();
 
+function generateEmail(name: string, hotelSlug: string) {
+  return name.toLowerCase().replace(/[^a-z]/g, "") + "@" + hotelSlug.replace(/-/g, "") + ".local";
+}
+
 async function main() {
-  console.log('🌱 Seeding ChatHotel database with Darbar – A Heritage Farmstay data...');
-
-  // Create Darbar Hotel
-  const darbarHotel = await prisma.hotel.create({
-    data: {
-      name: 'Darbar – A Heritage Farmstay',
-      slug: 'darbar-farmstay',
-      email: 'darbarorganichotel@gmail.com',
-      phone: '+91-9910364826',
-      whatsappNumber: '+91-9910364826',
-      address: 'Ranichauri, Near Chamba',
-      city: 'New Tehri',
-      state: 'Uttarakhand',
-      country: 'India',
+  // Create Hotel - Darbar
+  const darbar = await prisma.hotel.upsert({
+    where: { slug: 'darbar-heritage-farmstay' },
+    update: {},
+    create: {
+      name: "Darbar – A Heritage Farmstay",
+      slug: "darbar-heritage-farmstay",
+      email: "darbarorganichotel@gmail.com",
+      phone: "+919910364826",
+      whatsappNumber: "+919910364826",
+      address: "Ranichauri, Chamba Road, Near New Tehri",
+      city: "Tehri Garhwal",
+      state: "Uttarakhand",
+      country: "India",
+      postalCode: "249145",
+      timezone: "Asia/Kolkata",
       totalRooms: 13,
-      hotelType: 'heritage',
+      hotelType: "heritage",
       starRating: 4,
-      subscriptionPlan: 'pro',
-      subscriptionStatus: 'active',
-    },
+      subscriptionPlan: "premium",
+      subscriptionStatus: "active",
+      subscriptionEndsAt: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
+      isActive: true,
+      googleMapsLink: "https://maps.app.goo.gl/JCAetmW1ZCGF3Fyy8"
+    }
   });
 
-  console.log(`✅ Created hotel: ${darbarHotel.name}`);
-
-  // Create staff
-  const owner = await prisma.hotelUser.create({
-    data: {
-      hotelId: darbarHotel.id,
-      name: 'Sarthak Kumaria',
-      email: 'sarthak@darbarfarmstay.com',
-      passwordHash: '$2a$10$dummy.hash.for.testing',
-      phone: '+91-9910364826',
-      role: 'owner',
-    },
+  // Create Hotel - The Deck
+  const deck = await prisma.hotel.upsert({
+    where: { slug: 'the-deck' },
+    update: {},
+    create: {
+      name: "The Deck – Indian Fusion & Bar",
+      slug: "the-deck",
+      email: "thedeckbataghaat@gmail.com",
+      phone: "+919286041236",
+      whatsappNumber: "+919286041236",
+      address: "Bataghaat, Near Landour, Mussoorie",
+      city: "Mussoorie",
+      state: "Uttarakhand",
+      country: "India",
+      postalCode: "248179",
+      timezone: "Asia/Kolkata",
+      totalRooms: 0,
+      hotelType: "restaurant",
+      starRating: 4,
+      subscriptionPlan: "free",
+      subscriptionStatus: "trial",
+      subscriptionEndsAt: new Date(new Date().setMonth(new Date().getMonth() + 1)),
+      isActive: true,
+      googleMapsLink: "https://maps.app.goo.gl/Qjvc4NnYZQQKDcWn8"
+    }
   });
 
-  const manager = await prisma.hotelUser.create({
-    data: {
-      hotelId: darbarHotel.id,
-      name: 'Meenal',
-      email: 'meenal@darbarfarmstay.com',
-      passwordHash: '$2a$10$dummy.hash.for.testing',
-      phone: '+91-9702456293',
-      role: 'manager',
-    },
+  // Room Types for Darbar
+  const [familySuite, heritageRoom, greenChalet] = await Promise.all([
+    prisma.roomType.create({
+      data: {
+        hotelId: darbar.id,
+        name: "Family Suite – HR01",
+        description: "Spacious suite with 2 kid-size beds and heritage interiors.",
+        capacity: 4,
+        basePrice: new Prisma.Decimal(6500),
+        weekendPrice: new Prisma.Decimal(7000),
+        seasonalMultiplier: new Prisma.Decimal(1.25),
+        amenities: ["WiFi", "Heater", "Hot Water", "2 Kids Beds"],
+        sizeSqft: 350,
+        bedType: "Queen + 2 Kid Beds",
+        bedCount: 3
+      }
+    }),
+    prisma.roomType.create({
+      data: {
+        hotelId: darbar.id,
+        name: "Heritage Room",
+        description: "Charming rooms with Garhwali-style decor and modern comfort.",
+        capacity: 2,
+        basePrice: new Prisma.Decimal(5500),
+        weekendPrice: new Prisma.Decimal(6000),
+        seasonalMultiplier: new Prisma.Decimal(1.15),
+        amenities: ["WiFi", "Heater", "Hot Water"],
+        sizeSqft: 300,
+        bedType: "Queen",
+        bedCount: 1
+      }
+    }),
+    prisma.roomType.create({
+      data: {
+        hotelId: darbar.id,
+        name: "Green Chalet",
+        description: "Luxury tented chalets with private sit-outs and forest views.",
+        capacity: 3,
+        basePrice: new Prisma.Decimal(7500),
+        weekendPrice: new Prisma.Decimal(8000),
+        seasonalMultiplier: new Prisma.Decimal(1.3),
+        amenities: ["WiFi", "Heater", "Balcony", "Forest View"],
+        sizeSqft: 400,
+        bedType: "King",
+        bedCount: 1
+      }
+    })
+  ]);
+
+  // Rooms for Darbar
+  await prisma.room.createMany({
+    data: [
+      { hotelId: darbar.id, roomTypeId: familySuite.id, roomNumber: "HR01", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR03", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR04", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR05", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR06", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR07", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR08", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR09", floor: 1 },
+      { hotelId: darbar.id, roomTypeId: heritageRoom.id, roomNumber: "HR10", floor: 2 },
+      { hotelId: darbar.id, roomTypeId: greenChalet.id, roomNumber: "Chalet01", floor: 0 },
+      { hotelId: darbar.id, roomTypeId: greenChalet.id, roomNumber: "Chalet02", floor: 0 },
+      { hotelId: darbar.id, roomTypeId: greenChalet.id, roomNumber: "Chalet03", floor: 0 },
+      { hotelId: darbar.id, roomTypeId: greenChalet.id, roomNumber: "Chalet04", floor: 0 }
+    ]
   });
 
-  console.log(`✅ Created staff: ${owner.name}, ${manager.name}`);
+  const darbarEmployees = [
+    "SAURAV SINGH", "Suraj UT", "Jai Kaintura", "Gaurav", "Kamal NEGI", "Harish", "MAMTA",
+    "Mohan Lal", "Parmila", "Sunil", "Baadal", "Karan", "Suraj", "Vipul Rawat", "Manvir Sajwan",
+    "Manu Dhiman", "ASHOK MALIK", "SARTHAK KUMARIA"
+  ];
 
-  // Create room types
-  const heritageRoom = await prisma.roomType.create({
-    data: {
-      hotelId: darbarHotel.id,
-      name: 'Heritage Room',
-      description: 'Vintage-styled room with royal interiors',
-      capacity: 2,
-      basePrice: 5000.0,
-      amenities: ['wifi', 'heater', 'attached_bathroom'],
-      sizeSqft: 250,
-      bedType: 'queen',
-      bedCount: 1,
-    },
+  await prisma.hotelUser.createMany({
+    data: darbarEmployees.map(name => ({
+      hotelId: darbar.id,
+      name,
+      role: "Staff",
+      phone: "",
+      email: generateEmail(name, darbar.slug),
+      passwordHash: "",
+      permissions: {},
+      isActive: true
+    }))
   });
 
-  const chalet = await prisma.roomType.create({
-    data: {
-      hotelId: darbarHotel.id,
-      name: 'Luxury Chalet',
-      description: 'Spacious luxury tent cottage with scenic views',
-      capacity: 3,
-      basePrice: 7000.0,
-      weekendPrice: 8000.0,
-      amenities: ['wifi', 'private_deck', 'heater', 'attached_bathroom'],
-      sizeSqft: 400,
-      bedType: 'king',
-      bedCount: 1,
-    },
+  const deckEmployees = [
+    "Kuldeep Rana", "Deepak", "Varun", "Ankit Rana", "Arjun Singh", "Bhupendra", "Sandeep Rana", "Praveen"
+  ];
+
+  await prisma.hotelUser.createMany({
+    data: deckEmployees.map(name => ({
+      hotelId: deck.id,
+      name,
+      role: "Staff",
+      phone: "",
+      email: generateEmail(name, deck.slug),
+      passwordHash: "",
+      permissions: {},
+      isActive: true
+    }))
   });
-
-  console.log(`✅ Created room types: ${heritageRoom.name}, ${chalet.name}`);
-
-  // Create rooms
-  const rooms = [];
-  for (let i = 1; i <= 9; i++) {
-    rooms.push({
-      hotelId: darbarHotel.id,
-      roomTypeId: heritageRoom.id,
-      roomNumber: `H${i}`,
-      floor: 1,
-      status: 'AVAILABLE',
-    });
-  }
-  for (let i = 1; i <= 4; i++) {
-    rooms.push({
-      hotelId: darbarHotel.id,
-      roomTypeId: chalet.id,
-      roomNumber: `C${i}`,
-      floor: 1,
-      status: 'AVAILABLE',
-    });
-  }
-  await prisma.room.createMany({ data: rooms });
-
-  console.log(`✅ Created ${rooms.length} rooms`);
-
-  console.log('\n🎉 Darbar Farmstay seeding completed successfully!');
 }
 
 main()
-  .catch((e) => {
-    console.error('❌ Error seeding database:', e);
-    process.exit(1);
-  })
-  .finally(async () => {
+  .then(() => prisma.$disconnect())
+  .catch(async (e) => {
+    console.error(e);
     await prisma.$disconnect();
+    process.exit(1);
   });

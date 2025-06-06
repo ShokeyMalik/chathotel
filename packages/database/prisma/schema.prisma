@@ -18,6 +18,8 @@ model Hotel {
   email                   String   @unique
   phone                   String   @unique
   whatsappNumber          String   @unique @map("whatsapp_number")
+  googleMapsLink          String?  @db.Text
+
   
   // Hotel Details
   address                 String?
