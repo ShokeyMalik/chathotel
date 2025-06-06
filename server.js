@@ -713,19 +713,35 @@ function generateTargetedQuestion(needed, memory) {
 }
 
 // Claude API integration with smart context
+// Enhanced Claude integration with conversation awareness
 async function callClaudeWithContext(messages, guestContext) {
     if (!CLAUDE_API_KEY) {
-        console.log('❌ Claude API not configured, using fallback');
-        return generateSmartFallback(messages[messages.length - 1].content, guestContext);
+        console.log('❌ Claude API not configured, using smart fallback');
+        
+        // Use the conversation analysis for fallback too
+        const currentMessage = messages[messages.length - 1]?.content || '';
+        const mockMessages = messages.map(m => ({ content: m.content }));
+        const analysis = analyzeFullConversation(mockMessages, currentMessage);
+        
+        if (analysis.isComplete) {
+            return generateSmartQuote(analysis);
+        } else {
+            return generateIntelligentQuestion(analysis, mockMessages);
+        }
     }
 
     try {
+        // Build conversation history for Claude
+        const conversationHistory = messages.map(m => m.content).join('\n');
+        
         const roomTypes = await getRoomTypesFromDatabase();
         const roomInfo = roomTypes.map(room => 
             `${room.name}: ₹${room.basePrice}/night (${room.capacity} guests)`
         ).join('\n');
 
-        const systemPrompt = `You are a SMART booking assistant for Darbar Heritage Farmstay. Be concise and NEVER repeat questions.
+        const systemPrompt = `You are a SMART booking assistant for Darbar Heritage Farmstay. 
+
+CRITICAL: NEVER repeat questions already asked in the conversation.
 
 HOTEL INFO:
 - Location: Ranichauri, Tehri Garhwal, Uttarakhand  
@@ -738,23 +754,25 @@ PRICING:
 - Under 6: FREE
 - 6-12 years: 50% discount
 - 12+ years: Full price
-- Extra bed: ₹1100/night
+
+FULL CONVERSATION HISTORY:
+${conversationHistory}
 
 GUEST CONTEXT:
 ${guestContext}
 
-CRITICAL RULES:
-1. ANALYZE the FULL conversation - don't ask for info already provided
-2. If guest provided dates + guest count + child ages → Give FINAL price
-3. If missing 1 piece of info → Ask ONLY for that
-4. Keep responses under 3 lines
-5. NEVER repeat questions
-6. Calculate nights correctly: "6th and 7th" = 1 night
+RULES:
+1. READ the full conversation above - NEVER ask questions already asked
+2. If guest says "not yet decided" about dates, be patient and helpful
+3. If you have complete info → Give final price with breakdown
+4. If missing info AND haven't asked before → Ask once
+5. If already asked 2+ times → Be helpful, don't push
+6. Keep responses under 3 lines
+7. "6th and 7th" = 1 night, not 4 nights
 
 EXAMPLES:
-Complete: "✅ Perfect! 1 night for 4 guests. Heritage Room: ₹5,500 (2 kids free). Call +91-9910364826!"
-Missing ages: "Child ages for accurate pricing?"
-Missing dates: "What dates work for you?"`;
+- If already asked for dates 2+ times: "I'm here when you're ready! Call +91-9910364826"
+- If have everything: "✅ Perfect! 1 night for 4 guests. Heritage Room: ₹5,500 (2 kids free). Call +91-9910364826!"`;
 
         const response = await fetch(CLAUDE_API_URL, {
             method: 'POST',
@@ -782,7 +800,6 @@ Missing dates: "What dates work for you?"`;
         return generateSmartFallback(messages[messages.length - 1].content, guestContext);
     }
 }
-
 // Smart fallback function
 async function generateSmartFallback(message, guestContext) {
     const msg = message.toLowerCase();
@@ -804,12 +821,13 @@ async function generateSmartFallback(message, guestContext) {
 // =============================================================================
 
 // Enhanced message processing with memory
+// Enhanced message processing that actually works
 async function processIncomingMessage(message) {
     const guestPhone = message.from;
     const messageText = message.text?.body || '';
     const messageId = message.id;
     
-    console.log('\n📥 Processing message with smart memory:');
+    console.log('\n📥 Processing message with TRULY smart system:');
     console.log('  From:', guestPhone);
     console.log('  Message:', messageText);
     
@@ -826,29 +844,39 @@ async function processIncomingMessage(message) {
             return;
         }
         
-        // 2. Update conversation memory
-        const memory = updateConversationMemory(guest.id, messageText);
-        console.log('🧠 Conversation memory:', memory);
-        
-        // 3. Save incoming message
+        // 2. Save incoming message FIRST
         await saveMessage(guest.id, messageText, 'incoming', messageId);
         
-        // 4. Get guest context
-        const guestContext = await getGuestContext(guest);
+        // 3. Get FULL conversation history to analyze
+        const recentMessages = await prisma.whatsAppMessage.findMany({
+            where: { guestId: guest.id },
+            orderBy: { createdAt: 'desc' },
+            take: 10
+        }).catch(() => []);
         
-        // 5. Generate smart response based on memory
+        console.log(`💬 Found ${recentMessages.length} recent messages`);
+        
+        // 4. Analyze conversation to avoid repetition
+        const conversationAnalysis = analyzeFullConversation(recentMessages, messageText);
+        console.log('🧠 Conversation analysis:', conversationAnalysis);
+        
+        // 5. Generate SMART response based on analysis
         let aiResponse;
         
-        if (hasCompleteBookingInfo(memory)) {
+        // Check if we've already asked for dates multiple times
+        if (conversationAnalysis.alreadyAskedForDates >= 2) {
+            aiResponse = `🏨 I understand you haven't decided on dates yet. 
+No worries! When you're ready, just let me know your preferred dates.
+Call +91-9910364826 for immediate assistance! 🌿`;
+        } else if (conversationAnalysis.isComplete) {
             // Generate final quote
-            aiResponse = await generateFinalQuote(memory);
+            aiResponse = await generateSmartQuote(conversationAnalysis);
         } else {
-            // Ask for missing info only
-            const needed = getNeededInfo(memory);
-            aiResponse = generateTargetedQuestion(needed, memory);
+            // Ask for missing info intelligently
+            aiResponse = generateIntelligentQuestion(conversationAnalysis, recentMessages);
         }
         
-        console.log('🤖 Smart response generated');
+        console.log('🤖 Smart response generated:', aiResponse);
         
         // 6. Save AI response
         await saveMessage(guest.id, aiResponse, 'outgoing');
@@ -857,13 +885,162 @@ async function processIncomingMessage(message) {
         const result = await sendWhatsAppMessage(guestPhone, aiResponse, messageId);
         
         if (result.success) {
-            console.log('✅ Smart response sent successfully!');
+            console.log('✅ Truly smart response sent!');
         } else {
             console.log('❌ Failed to send response:', result.error);
         }
         
     } catch (error) {
         console.error('❌ Error processing message:', error);
+    }
+}
+
+// Analyze the FULL conversation to understand context
+function analyzeFullConversation(messages, currentMessage) {
+    const allMessages = [
+        ...messages.reverse().map(m => m.content),
+        currentMessage
+    ];
+    
+    const fullText = allMessages.join(' ').toLowerCase();
+    
+    const analysis = {
+        messages: allMessages,
+        messageCount: allMessages.length,
+        
+        // Check what we've already asked for
+        alreadyAskedForDates: 0,
+        alreadyAskedForGuests: 0,
+        alreadyAskedForAges: 0,
+        
+        // Check what info we have
+        hasDates: false,
+        hasGuestCount: false,
+        hasChildAges: false,
+        
+        // Extracted info
+        dates: null,
+        nights: null,
+        adults: null,
+        children: null,
+        childAges: [],
+        
+        isComplete: false
+    };
+    
+    // Count how many times we've asked for each piece of info
+    allMessages.forEach(msg => {
+        const msgLower = msg.toLowerCase();
+        if (msgLower.includes('check-in') && msgLower.includes('check-out')) {
+            analysis.alreadyAskedForDates++;
+        }
+        if (msgLower.includes('how many adults') || msgLower.includes('guest count')) {
+            analysis.alreadyAskedForGuests++;
+        }
+        if (msgLower.includes('children\'s ages') || msgLower.includes('child ages')) {
+            analysis.alreadyAskedForAges++;
+        }
+    });
+    
+    // Extract dates
+    const dateInfo = extractDatesWithNights(fullText);
+    if (dateInfo.checkIn) {
+        analysis.hasDates = true;
+        analysis.dates = `${dateInfo.checkIn} to ${dateInfo.checkOut}`;
+        analysis.nights = dateInfo.nights;
+    }
+    
+    // Extract guest counts
+    const adultMatch = fullText.match(/(\d+)\s*adult/);
+    if (adultMatch) {
+        analysis.hasGuestCount = true;
+        analysis.adults = parseInt(adultMatch[1]);
+    }
+    
+    const childMatch = fullText.match(/(\d+)\s*(kid|child)/);
+    if (childMatch) {
+        analysis.children = parseInt(childMatch[1]);
+    }
+    
+    // Extract child ages
+    if (fullText.includes('both are below 6') || fullText.includes('under 6')) {
+        analysis.hasChildAges = true;
+        analysis.childAges = [4, 5];
+    }
+    
+    // Set total guest count
+    if (analysis.adults !== null && analysis.children !== null) {
+        analysis.hasGuestCount = true;
+    }
+    
+    // Check if we have complete info
+    analysis.isComplete = analysis.hasDates && analysis.hasGuestCount && 
+                         (analysis.children === 0 || analysis.hasChildAges);
+    
+    return analysis;
+}
+
+// Generate intelligent question that doesn't repeat
+function generateIntelligentQuestion(analysis, recentMessages) {
+    // If guest said "not yet decided", be patient
+    const lastMessage = recentMessages[0]?.content.toLowerCase() || '';
+    if (lastMessage.includes('not yet decided') || lastMessage.includes('not decided')) {
+        return `No problem! Take your time deciding. 
+When you're ready, just share your dates and I'll help with availability.
+Call +91-9910364826 anytime! 🌿`;
+    }
+    
+    // Prioritize missing info without repetition
+    if (!analysis.hasDates && analysis.alreadyAskedForDates < 2) {
+        return `📅 What are your check-in and check-out dates?\n📞 +91-9910364826`;
+    } else if (!analysis.hasGuestCount && analysis.alreadyAskedForGuests < 2) {
+        return `👥 How many adults and children?\n📞 +91-9910364826`;
+    } else if (analysis.children > 0 && !analysis.hasChildAges && analysis.alreadyAskedForAges < 2) {
+        return `What are the children's ages for accurate pricing?\n📞 +91-9910364826`;
+    } else {
+        // We've asked enough, be helpful instead of pushy
+        return `🏨 I'm here when you're ready to book!
+Heritage rooms from ₹5,500/night
+Call +91-9910364826 for immediate assistance 🌿`;
+    }
+}
+
+// Generate smart quote based on analysis
+async function generateSmartQuote(analysis) {
+    try {
+        const roomTypes = await getRoomTypesFromDatabase();
+        const totalGuests = (analysis.adults || 2) + (analysis.children || 0);
+        
+        // Find suitable room
+        const roomType = roomTypes.find(r => r.capacity >= totalGuests) || roomTypes[1];
+        
+        // Calculate pricing
+        const pricing = calculateBookingPrice(
+            roomType,
+            analysis.nights || 1,
+            analysis.adults || 2,
+            analysis.children || 0,
+            analysis.childAges,
+            0
+        );
+        
+        let response = `✅ Perfect! ${analysis.nights || 1} night${(analysis.nights || 1) > 1 ? 's' : ''} for ${totalGuests} guests\n`;
+        response += `${roomType.name}: ₹${pricing.totalPrice}`;
+        
+        // Add child pricing note
+        if (analysis.children > 0) {
+            const freeKids = analysis.childAges.filter(age => age < 6).length;
+            if (freeKids > 0) {
+                response += ` (${freeKids} kids free)`;
+            }
+        }
+        
+        response += `\n📞 Call +91-9910364826 to book now!`;
+        
+        return response;
+    } catch (error) {
+        console.error('Error generating quote:', error);
+        return `✅ Great! Call +91-9910364826 for pricing and booking! 🏨`;
     }
 }
 
