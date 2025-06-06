@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 const { PrismaClient } = require('@prisma/client');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001; // Changed from 3000 to 3001
 
 // Initialize Prisma client with your existing database
 const prisma = new PrismaClient({
