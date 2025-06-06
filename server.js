@@ -226,6 +226,270 @@ async function getGuestContext(guest) {
     return context;
 }
 
+// Auto-seed function for production deployment
+async function ensureHotelExists() {
+    console.log('🔍 Checking if hotel seeding is required...');
+    
+    try {
+        // Check if Darbar hotel exists
+        const existingHotel = await prisma.hotel.findUnique({
+            where: { slug: 'darbar-heritage-farmstay' }
+        });
+
+        if (existingHotel) {
+            console.log('✅ Hotel already exists:', existingHotel.name);
+            console.log('   Hotel ID:', existingHotel.id);
+            
+            // Update the global hotel ID to match what's in the database
+            global.ACTUAL_HOTEL_ID = existingHotel.id;
+            return existingHotel;
+        }
+
+        console.log('🏗️ Hotel not found. Creating Darbar Heritage Farmstay...');
+        
+        // Create the hotel with all necessary data
+        const hotel = await prisma.hotel.create({
+            data: {
+                name: "Darbar – A Heritage Farmstay",
+                slug: "darbar-heritage-farmstay",
+                email: "darbarorganichotel@gmail.com",
+                phone: "+919910364826",
+                whatsappNumber: "+919910364826",
+                address: "Ranichauri, Chamba Road, Near New Tehri",
+                city: "Tehri Garhwal",
+                state: "Uttarakhand",
+                country: "India",
+                postalCode: "249145",
+                timezone: "Asia/Kolkata",
+                totalRooms: 13,
+                hotelType: "heritage",
+                starRating: 4,
+                subscriptionPlan: "premium",
+                subscriptionStatus: "active",
+                subscriptionEndsAt: new Date(new Date().setFullYear(new Date().getFullYear() + 1)),
+                isActive: true,
+                googleMapsLink: "https://maps.app.goo.gl/JCAetmW1ZCGF3Fyy8"
+            }
+        });
+
+        console.log('✅ Hotel created successfully:', hotel.name);
+        console.log('   Hotel ID:', hotel.id);
+
+        // Create room types
+        console.log('🛏️ Creating room types...');
+        
+        const [familySuite, heritageRoom, greenChalet] = await Promise.all([
+            prisma.roomType.create({
+                data: {
+                    hotelId: hotel.id,
+                    name: "Family Suite – HR01",
+                    description: "Spacious suite with 2 kid-size beds and heritage interiors.",
+                    capacity: 4,
+                    basePrice: 6500,
+                    weekendPrice: 7000,
+                    seasonalMultiplier: 1.25,
+                    amenities: ["WiFi", "Heater", "Hot Water", "2 Kids Beds"],
+                    sizeSqft: 350,
+                    bedType: "Queen + 2 Kid Beds",
+                    bedCount: 3
+                }
+            }),
+            prisma.roomType.create({
+                data: {
+                    hotelId: hotel.id,
+                    name: "Heritage Room",
+                    description: "Charming rooms with Garhwali-style decor and modern comfort.",
+                    capacity: 2,
+                    basePrice: 5500,
+                    weekendPrice: 6000,
+                    seasonalMultiplier: 1.15,
+                    amenities: ["WiFi", "Heater", "Hot Water"],
+                    sizeSqft: 300,
+                    bedType: "Queen",
+                    bedCount: 1
+                }
+            }),
+            prisma.roomType.create({
+                data: {
+                    hotelId: hotel.id,
+                    name: "Green Chalet",
+                    description: "Luxury tented chalets with private sit-outs and forest views.",
+                    capacity: 3,
+                    basePrice: 7500,
+                    weekendPrice: 8000,
+                    seasonalMultiplier: 1.3,
+                    amenities: ["WiFi", "Heater", "Balcony", "Forest View"],
+                    sizeSqft: 400,
+                    bedType: "King",
+                    bedCount: 1
+                }
+            })
+        ]);
+
+        console.log('✅ Room types created');
+
+        // Create rooms
+        console.log('🏠 Creating rooms...');
+        
+        await prisma.room.createMany({
+            data: [
+                { hotelId: hotel.id, roomTypeId: familySuite.id, roomNumber: "HR01", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR03", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR04", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR05", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR06", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR07", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR08", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR09", floor: 1 },
+                { hotelId: hotel.id, roomTypeId: heritageRoom.id, roomNumber: "HR10", floor: 2 },
+                { hotelId: hotel.id, roomTypeId: greenChalet.id, roomNumber: "Chalet01", floor: 0 },
+                { hotelId: hotel.id, roomTypeId: greenChalet.id, roomNumber: "Chalet02", floor: 0 },
+                { hotelId: hotel.id, roomTypeId: greenChalet.id, roomNumber: "Chalet03", floor: 0 },
+                { hotelId: hotel.id, roomTypeId: greenChalet.id, roomNumber: "Chalet04", floor: 0 }
+            ]
+        });
+
+        console.log('✅ Rooms created');
+
+        // Create basic staff
+        console.log('👥 Creating basic staff...');
+        
+        const darbarEmployees = [
+            "SAURAV SINGH", "Suraj UT", "Jai Kaintura", "Gaurav", "Kamal NEGI", 
+            "Harish", "MAMTA", "Mohan Lal", "Parmila", "Sunil", "Baadal", 
+            "Karan", "Suraj", "Vipul Rawat", "Manvir Sajwan", "Manu Dhiman", 
+            "ASHOK MALIK", "SARTHAK KUMARIA"
+        ];
+
+        function generateEmail(name, hotelSlug) {
+            return name.toLowerCase().replace(/[^a-z]/g, "") + "@" + hotelSlug.replace(/-/g, "") + ".local";
+        }
+
+        await prisma.hotelUser.createMany({
+            data: darbarEmployees.map(name => ({
+                hotelId: hotel.id,
+                name,
+                role: "Staff",
+                phone: "",
+                email: generateEmail(name, hotel.slug),
+                passwordHash: "",
+                permissions: {},
+                isActive: true
+            }))
+        });
+
+        console.log('✅ Staff created');
+        console.log('🎉 Complete hotel setup finished!');
+        
+        global.ACTUAL_HOTEL_ID = hotel.id;
+        return hotel;
+
+    } catch (error) {
+        console.error('❌ Error ensuring hotel exists:', error);
+        throw error;
+    }
+}
+
+// Updated findOrCreateGuest that uses the validated hotel ID
+async function findOrCreateGuest(phoneNumber, name = null) {
+    console.log('🔍 Looking up guest:', phoneNumber);
+
+    // Use the actual hotel ID from validation
+    const hotelId = global.ACTUAL_HOTEL_ID || HOTEL_ID;
+
+    try {
+        let guest = await prisma.guest.findFirst({
+            where: {
+                OR: [
+                    { phone: phoneNumber },
+                    { phone: phoneNumber.replace(/\D/g, '') },
+                    { phone: `+${phoneNumber}` },
+                    { whatsappNumber: phoneNumber },
+                    { whatsappNumber: phoneNumber.replace(/\D/g, '') },
+                    { whatsappNumber: `+${phoneNumber}` }
+                ]
+            },
+            include: {
+                bookings: {
+                    orderBy: { createdAt: 'desc' },
+                    take: 5
+                }
+            }
+        });
+
+        if (!guest) {
+            console.log('👤 Creating new guest profile');
+
+            const nameSuffix = phoneNumber.slice(-4);
+            const fallbackName = name || `Guest ${nameSuffix}`;
+            const nameParts = fallbackName.split(' ');
+            const firstName = nameParts[0] || 'Guest';
+            const lastName = nameParts.slice(1).join(' ') || nameSuffix;
+
+            guest = await prisma.guest.create({
+                data: {
+                    phone: phoneNumber,
+                    whatsappNumber: phoneNumber,
+                    firstName: firstName,
+                    lastName: lastName,
+                    email: null,
+                    vipStatus: false,
+                    blacklisted: false,
+                    preferences: {},
+                    hotel: {
+                        connect: {
+                            id: hotelId
+                        }
+                    }
+                },
+                include: {
+                    bookings: true,
+                },
+            });
+            
+            console.log('✅ Created new guest:', firstName, lastName);
+        } else {
+            console.log('✅ Found existing guest:', guest.firstName, guest.lastName);
+            await prisma.guest.update({
+                where: { id: guest.id },
+                data: { updatedAt: new Date() }
+            });
+        }
+
+        return guest;
+    } catch (error) {
+        console.error('❌ Database error finding/creating guest:', error);
+        return null;
+    }
+}
+
+// Updated server startup with auto-seeding
+app.listen(PORT, async () => {
+    console.log('\n🚀 ChatHotel Database-Integrated AI Starting...');
+    console.log('='.repeat(60));
+    console.log(`✅ Server running on port ${PORT}`);
+    
+    try {
+        // Connect to database
+        await prisma.$connect();
+        console.log('✅ Database connected successfully');
+        
+        // Ensure hotel exists (auto-seed if needed)
+        await ensureHotelExists();
+        
+        const stats = await prisma.guest.count();
+        console.log(`📊 Database stats: ${stats} guests registered`);
+        
+    } catch (error) {
+        console.log('❌ Database setup failed:', error.message);
+        console.log('⚠️ Server will continue but guest creation may fail');
+    }
+    
+    console.log(`🤖 Claude API: ${CLAUDE_API_KEY ? '✅ Configured' : '❌ Not configured'}`);
+    console.log(`📱 WhatsApp: ${WHATSAPP_ACCESS_TOKEN ? '✅ Ready' : '❌ Not configured'}`);
+    console.log('='.repeat(60));
+});
+
 async function checkRoomAvailability(checkIn, checkOut, roomType = null) {
     console.log('🏨 Checking room availability');
     
