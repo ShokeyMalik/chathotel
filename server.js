@@ -42,8 +42,12 @@ app.use((req, res, next) => {
 });
 
 // Database Helper Functions
+// Fixed Database Helper Function
 async function findOrCreateGuest(phoneNumber, name = null) {
     console.log('🔍 Looking up guest:', phoneNumber);
+
+    // Your hotel ID (from the booking creation function)
+    const HOTEL_ID = 'cmb7fuyga0000pkwov3o8hm4g';
 
     try {
         let guest = await prisma.guest.findFirst({
@@ -78,6 +82,12 @@ async function findOrCreateGuest(phoneNumber, name = null) {
                     lastName: '—',
                     createdAt: new Date(),
                     updatedAt: new Date(),
+                    // Connect to the existing hotel
+                    hotel: {
+                        connect: {
+                            id: HOTEL_ID
+                        }
+                    }
                 },
                 include: {
                     bookings: true,
